@@ -1,13 +1,4 @@
-"""Wire test: LibraryWriter.commit calls qmd hooks against the library path.
-
-The writer's post-commit hook mirrors the wiki-side hook
-(``etl/stages/write.py``), but with the path rooted at
-``library.collections_root / <collection>`` rather than
-``wiki.wiki_dir / <collection>``. Real ``qmd`` shell-outs are slow +
-flaky in CI, so the test monkey-patches ``qmd_collection_add_or_update``
-(plus ``qmd_update`` and ``qmd_embed``) and asserts the writer routes
-through the new ``library_target=`` kwarg.
-"""
+"""Wire test: LibraryWriter.commit calls qmd hooks against the library path."""
 
 from __future__ import annotations
 
@@ -152,17 +143,7 @@ def test_writer_qmd_hook_failure_logs_stderr_and_returns_sha(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """qmd hook failures must surface as stderr warnings; commit still lands.
-
-    Regression for the silent-failure fix in ``writer.py``: the three qmd
-    hooks (register / update / embed) run inside independent ``try``
-    blocks that emit ``warning: qmd ...`` lines to ``sys.stderr`` on
-    failure. The library commit must still land (return a real sha) so
-    the authoritative state survives a derived-index outage. Without the
-    stderr assertions, a regression that reverts ``print(..., file=
-    sys.stderr)`` back to ``pass``, swaps stderr to stdout, or rebundles
-    the hooks under one outer ``try`` would never trip a test.
-    """
+    """Qmd hook failures must surface as stderr warnings; commit still lands."""
     coll_dir = lib_with_git.collections_root / "claude"
     coll_dir.mkdir(parents=True, exist_ok=True)
     mirror = coll_dir / "page.md"

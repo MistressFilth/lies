@@ -89,14 +89,7 @@ def test_acquire_flock_succeeds_when_unheld(git_wiki: Wiki) -> None:
 def test_acquire_flock_raises_busy_when_held(
     git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A live contender's create-lock blocks acquire; service surfaces ``WikiLockBusy``.
-
-    The underlying :func:`acquire_create_lock` reap loop auto-recovers from
-    a dead holder; simulating a still-alive foreign process requires a
-    second OS process. We patch ``acquire_create_lock`` to return ``None``
-    directly so this test exercises the ``WikiLockBusy`` wrapping in
-    ``_acquire_wiki_flock`` without spawning a subprocess.
-    """
+    """A live contender's create-lock blocks acquire; service surfaces ``WikiLockBusy``."""
     service = WikiMemoryService(git_wiki)
     monkeypatch.setattr(
         "lies.memory.service.acquire_create_lock",
@@ -137,24 +130,14 @@ def test_acquire_flock_releases_on_exception(git_wiki: Wiki) -> None:
 
 
 def test_lock_path_is_not_in_wiki_data_root(git_wiki: Wiki) -> None:
-    """The envelope lock lives under XDG_RUNTIME_DIR, not under the wiki's data root.
-
-    No ``.lies/`` directory exists in the XDG layout — the lock cannot
-    live under the wiki anymore, so this is the structural invariant
-    that replaced the old ``.lies/memory.lock`` gitignore check.
-    """
+    """The envelope lock lives under XDG_RUNTIME_DIR, not under the wiki's data root."""
     create_lock = git_wiki.memory_create_lock_path
     assert not str(create_lock).startswith(str(git_wiki.data_root))
     assert not (git_wiki.data_root / ".lies").exists()
 
 
 def test_stash_does_not_unlink_held_lock(git_wiki: Wiki) -> None:
-    """Regression: ``git stash --include-untracked`` must not unlink the lock.
-
-    Under the XDG layout the lock lives outside the working tree
-    (``$XDG_RUNTIME_DIR``), so even an untracked ``.gitignore`` exclusion
-    is unnecessary: there is no git coordinate file to escape.
-    """
+    """``git stash --include-untracked`` must not unlink the lock."""
     import subprocess
 
     service = WikiMemoryService(git_wiki)
@@ -211,9 +194,7 @@ def test_acquire_flock_raises_busy_message_cites_pid(
 def test_acquire_flock_raises_busy_message_legacy_when_no_pid(
     git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """WikiLockBusy raised with a None result (legacy callers) keeps the
-    legacy wording — no pid or started_at in the message.
-    """
+    """WikiLockBusy raised with a None result (legacy callers) keeps the legacy wording — no pid or started_at in the message."""
     monkeypatch.setattr(
         "lies.memory.service.acquire_create_lock",
         lambda *a, **kw: None,
@@ -229,9 +210,7 @@ def test_acquire_flock_raises_busy_message_legacy_when_no_pid(
 def test_acquire_flock_unrepairable_message_no_pid(
     git_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """WikiFlockUnrepairable from the force_repair=True retry-lost path uses
-    the documented 'pid was unlinked' wording.
-    """
+    """WikiFlockUnrepairable from the force_repair=True retry-lost path uses the documented 'pid was unlinked' wording."""
     monkeypatch.setattr(
         "lies.memory.service.acquire_create_lock",
         lambda *a, **kw: None,  # retry lost

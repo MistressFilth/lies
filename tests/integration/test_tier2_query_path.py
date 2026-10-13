@@ -1,33 +1,4 @@
-"""End-to-end integration tests for the Tier-2 query path. Gated on
-``INTEGRATION=1``.
-
-Exercises the full Tier-2 round-trip end-to-end against a real
-``Wiki`` + real catalog + real cross-process flock + mocked qmd:
-
-1. The librarian subagent's ``wiki_search`` / ``wiki_read`` /
-   ``wiki_catalog`` tools thread against the live catalog and
-   ``WikiMemoryService``.
-2. The synthesizer emits the inline ``[[slug]] (Heading):
-   "verbatim"`` form on a real round-trip.
-3. Filing-back writes the synthesis page with the
-   ``## Thesis`` / ``## Evidence`` / ``## Open Questions`` shape.
-4. Pre-existing footnote pages (separate fixture) are NOT
-   re-rendered by the filing-back path.
-
-The librarian and synthesizer agents are stubbed at the
-``run_sync`` instance-method boundary (per-instance, not per-class)
-so the assertions do not depend on a real LLM. qmd's post-commit
-refresh is also stubbed so the suite stays independent of a live
-qmd daemon.
-
-Run with:
-
-    INTEGRATION=1 pytest tests/integration/test_tier2_query_path.py -v
-
-Without ``INTEGRATION=1``, the conftest auto-skip gate fires and the
-module is collected-but-skipped (consistent with
-``test_synthesis_file_back``).
-"""
+"""End-to-end integration tests for the Tier-2 query path."""
 
 from __future__ import annotations
 
@@ -167,19 +138,7 @@ def _stub_librarian_output(wiki: Wiki) -> LibrarianOutput:
 def test_librarian_round_trip_with_real_wiki(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Librarian dispatch against a real wiki produces excerpts.
-
-    Stubs ``Orchestrator._librarian_agent.run_sync`` so the
-    assertion doesn't depend on a real LLM call. The stub returns a
-    canned ``LibrarianOutput`` built from the fixture wiki's pages,
-    with spans carrying the verbatim body text.
-
-    Verifies:
-    - The canned ``LibrarianOutput.distinct_pages`` matches the
-      number of fixture pages (3).
-    - Each :class:`PageExcerpt` carries at least one span with the
-      page's body content.
-    """
+    """Librarian dispatch against a real wiki produces excerpts."""
     wiki = _real_wiki(tmp_path)
     orch = _build_orch(wiki)
 
@@ -225,23 +184,7 @@ def test_librarian_round_trip_with_real_wiki(
 def test_synthesize_emits_inline_citation_form(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """End-to-end: question -> librarian -> synthesizer -> answer with
-    ``[[slug]]: "verbatim"`` form.
-
-    Stubs both the librarian and synthesizer agent ``run_sync``
-    methods. The librarian returns a canned 2-page bundle drawn from
-    the fixture; the synthesizer returns a ``QueryAnswer`` whose
-    ``claim_citations`` carry the verbatim quote the filed body
-    expects to render.
-
-    Verifies:
-    - ``Orchestrator.run_query`` returns a ``QueryAnswer`` whose
-      ``answer`` body contains the synthesizer-emitted text and the
-      threaded ``Citation`` set has the expected source discriminator.
-    - The ``_render_evidence`` projection (run on the answer) emits
-      the ``[[concepts/<slug>]] (Heading): "verbatim"`` form on the
-      filed body.
-    """
+    """End-to-end: question -> librarian -> synthesizer -> answer with ``[[slug]]: "verbatim"`` form."""
     wiki = _real_wiki(tmp_path)
     _stub_qmd_refresh(monkeypatch)
     orch = _build_orch(wiki)
@@ -338,23 +281,7 @@ def test_synthesize_emits_inline_citation_form(
 
 
 def test_file_back_writes_synthesis_page(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Filing-back writes a synthesis page with ``## Thesis`` /
-    ``## Evidence`` / ``## Open Questions`` sections.
-
-    Drives the full Tier-2 pipeline end-to-end with both sub-agents
-    stubbed. The librarian returns 3 distinct excerpts (the fixture's
-    three pages), the synthesizer emits a 3-citation answer, and the
-    filing-back path writes a synthesis page through
-    ``WikiMemoryService.apply_plan`` (via ``build_author_plan`` +
-    ``file_back_author``).
-
-    Verifies:
-    - The filed page lands under
-      ``<wiki_dir>/tier2-query-path/synthesis/<slug>.md``.
-    - The body has ``## Thesis``, ``## Evidence``,
-      ``## Open Questions`` (the synthesis section contract).
-    - The catalog has a row for the new page.
-    """
+    """Filing-back writes a synthesis page with ``## Thesis`` / ``## Evidence`` / ``## Open Questions`` sections."""
     wiki = _real_wiki(tmp_path)
     _stub_qmd_refresh(monkeypatch)
     orch = _build_orch(wiki)
@@ -443,14 +370,7 @@ def test_file_back_writes_synthesis_page(tmp_path: Path, monkeypatch: pytest.Mon
 def test_old_footnote_pages_remain_unchanged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Hard-cutover: pre-existing footnote pages are NOT re-rendered.
-
-    Two pre-existing pages are placed in the fixture wiki BEFORE the
-    round-trip runs: a footnote-style reference page and a notes
-    page. After the Tier-2 pipeline runs and files the new
-    synthesis, the pre-existing pages' byte-for-byte content must
-    be unchanged. Only the new synthesis page is added.
-    """
+    """Pre-existing footnote pages are NOT re-rendered."""
     wiki = _real_wiki(tmp_path)
     _stub_qmd_refresh(monkeypatch)
     orch = _build_orch(wiki)

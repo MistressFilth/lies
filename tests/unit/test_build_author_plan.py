@@ -1,8 +1,4 @@
-"""Tests for build_author_plan non-synthesis branch + _format_author_body.
-
-F3's synthesis branch is migrated in Task 5; F17's required-section
-enforcement is out out scope.
-"""
+"""Tests for build_author_plan non-synthesis branch + _format_author_body."""
 
 from __future__ import annotations
 
@@ -364,14 +360,7 @@ def test_build_author_plan_threads_render_format_to_synthesis_frontmatter():
 
 
 def test_format_author_body_render_format_quotes_hostile_values():
-    """render_format is double-quoted so YAML-significant characters in
-    the value do not break parsing.
-
-    Today only ``md``/``table``/``marp`` flow through, but the type is
-    ``str | None``; a future caller passing ``m:p`` (a colon inside),
-    ``a #b`` (a comment marker), or ``[a, b]`` (a flow indicator) must
-    still produce parseable YAML.
-    """
+    """Render_format is double-quoted so YAML-significant characters in the value do not break parsing."""
     import yaml
 
     from lies.page.author import _format_author_body

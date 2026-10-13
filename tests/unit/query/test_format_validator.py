@@ -1,10 +1,4 @@
-"""Unit tests for ``lies.query.format_validator``.
-
-The validator silently demotes ``table`` / ``marp`` hints to ``md`` when
-the body fails to parse for that format. The contract is pure: the
-input body is never mutated, and the only signal back to the caller is
-the resolved hint.
-"""
+"""Unit tests for ``lies.query.format_validator``."""
 
 from __future__ import annotations
 

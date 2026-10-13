@@ -56,26 +56,7 @@ def lib_with_git(lib: Library) -> Library:
 def test_writer_commit_qmd_post_commit_hook_invokes_helpers(
     lib_with_git: Library, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``commit(qmd_collection=X)`` invokes the qmd post-commit helpers.
-
-    Regression pin for the defect where bare-name qmd lookups
-    (``qmd_collection_add_or_update`` / ``qmd_update`` / ``qmd_embed``)
-    inside ``LibraryWriter.commit`` raise ``NameError`` because
-    Python ``LOAD_GLOBAL`` bytecode does NOT consult module-level
-    ``__getattr__`` — the helpers are installed via
-    :PEP:`562`'s ``__getattr__`` for *attribute access* only.
-    Each call was caught by the ``except Exception`` wrapper,
-    printed the "name '...' is not defined" warning, and committed
-    without registering with qmd.  Library mirrors existed on disk but
-    the qmd index never saw them, so every ``lies mcp query`` against
-    library content fell back to the wiki ``index.md``.
-
-    Today ``commit(qmd_collection=...)`` resolves the bare-name lookup
-    via the same ``globals().get(...) or __getattr__(...)`` workaround
-    :mod:`lies.cli.page` uses for its lazy ``Orchestrator`` import.
-    The stubs below replace the real qmd helpers; the test asserts the
-    stubs were each invoked (not the bare-name NameError swallowed).
-    """
+    """``commit(qmd_collection=X)`` invokes the qmd post-commit helpers."""
     calls: list[tuple[str, tuple]] = []
 
     def _stub_add_or_update(git_root, *args, **kwargs):
@@ -124,22 +105,7 @@ def test_writer_commit_qmd_post_commit_hook_invokes_helpers(
 
 
 def test_writer_auto_bootstrap_init_repo_on_first_commit(lib: Library) -> None:
-    """Fresh library (no ``.git``) gets bootstrapped transparently on first commit.
-
-    Regression for defect 2 from systematic-debugging triage: a fresh
-    library is a plain directory; ``LibraryWriter.commit`` called
-    against it raised ``LibraryAtomicCommitFailed("git add failed:
-    fatal: not a git repository")``, but the CLI swallowed the failure
-    (the ``typer.Exit(code=1)`` fires only on ``result.errors > 0``,
-    not on library envelope exceptions) and exited 0 with 628 mirror
-    files on disk and an empty catalog.  Today the writer bootstraps a
-    git repo on first ``__init__``; the commit path then runs normally.
-
-    Mirrors the wiki-side ``git_init_initial`` precedent at
-    ``src/lies/wiki/layout.py:56``.  No-change for callers against an
-    already-initialized repo (``.git`` already present → bootstrap
-    skipped).
-    """
+    """Fresh library (no ``.git``) gets bootstrapped transparently on first commit."""
     # Sanity: the fixture provides a bare library, no .git yet.
     assert not (lib.git_root / ".git").exists(), (
         f"test fixture should start with no .git, found one at {lib.git_root}"
@@ -190,12 +156,7 @@ def test_writer_commit_absolute_paths_are_coerced(lib_with_git: Library) -> None
 def test_writer_commit_path_outside_git_root_raises_typed(
     lib_with_git: Library, tmp_path: Path
 ) -> None:
-    """I12: a path that escapes ``git_root`` raises ``LibraryAtomicCommitFailed``.
-
-    Previously a bare ``Path.relative_to`` raised ``ValueError`` that
-    was caught by the generic envelope and misclassified as a git
-    failure. The fix surfaces a typed error with a clear diagnostic.
-    """
+    """A path that escapes ``git_root`` raises ``LibraryAtomicCommitFailed``."""
     outside = tmp_path / "outside.md"
     outside.write_text("body\n")
     writer = LibraryWriter(lib_with_git)
@@ -208,11 +169,7 @@ def test_writer_commit_path_outside_git_root_raises_typed(
 def test_writer_commit_failed_message_includes_recovery_command(
     lib_with_git: Library, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """I13: ``LibraryAtomicCommitFailed`` message includes the recovery command.
-
-    Spec §Atomic commit envelope mandates the recovery hint in the
-    raised message so the operator doesn't have to read the source.
-    """
+    """``LibraryAtomicCommitFailed`` message includes the recovery command."""
     from lies.library import writer as writer_mod
 
     def boom(*args, **kwargs):  # type: ignore[no-untyped-def]
@@ -254,14 +211,7 @@ def test_writer_commit_no_op_returns_none(lib_with_git: Library) -> None:
 def test_writer_commit_catalog_only_no_paths_skips_git_commit(
     lib_with_git: Library,
 ) -> None:
-    """Minor 27 anti-tautology: rel_paths=[] + updates=[...] short-circuits.
-
-    Previously ``atomic_commit(files=[])`` raised ``CommitError`` which the
-    envelope misclassified as ``LibraryAtomicCommitFailed``. The fix is
-    symmetric: when there are no mirror files to commit, skip the git
-    commit entirely but still upsert the catalog rows (the
-    ``upsert_pages`` auto-commit makes a separate git commit unnecessary).
-    """
+    """Rel_paths=[] + updates=[...] short-circuits."""
     before_sha = subprocess.run(
         ["git", "-C", str(lib_with_git.git_root), "rev-parse", "HEAD"],
         check=True,
@@ -420,19 +370,7 @@ def test_writer_upsert_catalog_raises_locked_when_commit_locked(
 def test_writer_commit_stages_deletions_of_tracked_files(
     lib_with_git: Library,
 ) -> None:
-    """LibraryWriter.commit must reconcile deletions of tracked files.
-
-    Pre-fix bug: ``git add -- <files>`` only staged explicit paths.
-    Files that were committed once and then deleted from disk remained
-    in HEAD forever, accumulating ghost entries across re-ingests.
-    The live ``~/.local/share/lies/library/`` at the start of this
-    branch had 2041 deletions visible from ``git status``.
-
-    After the explicit-files ``atomic_commit`` the writer must run
-    ``git add -u`` to stage modifications + deletions of tracked
-    files, then commit any newly-staged changes with a follow-up
-    message of the form ``<original> (reconcile deletions)``.
-    """
+    """LibraryWriter.commit must reconcile deletions of tracked files."""
     target = lib_with_git.collections_root / "foo" / "page.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("old content\n")
@@ -472,13 +410,7 @@ def test_writer_commit_touches_f14_last_write_marker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``LibraryWriter.commit`` must touch <XDG_CACHE_HOME>/qmd/last-write-marker.
-
-    F14 sentinel: the qmd daemon's staleness check reads this marker to
-    decide whether to reap+respawn. The touch must happen after the
-    underlying git commit succeeds and before the qmd post-commit hook
-    fires, so the daemon's mtime comparison sees this commit.
-    """
+    """``LibraryWriter.commit`` must touch <XDG_CACHE_HOME>/qmd/last-write-marker."""
     cache_dir = tmp_path / "cache"
     monkeypatch.setenv("XDG_CACHE_HOME", str(cache_dir))
 

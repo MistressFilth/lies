@@ -1,9 +1,4 @@
-"""XDG role-routing for the sync helper's heartbeat, telemetry, and quarantine.
-
-Verifies the locks, telemetry logs, and quarantine docs live under the
-XDG role roots (``$XDG_RUNTIME_DIR``, ``$XDG_STATE_HOME``) rather
-than the legacy ``<wiki>/.lies/`` location.
-"""
+"""XDG role-routing for the sync helper's heartbeat, telemetry, and quarantine."""
 
 from __future__ import annotations
 
@@ -143,14 +138,7 @@ def test_quarantine_writes_under_state_root(wiki: Wiki) -> None:
 
 
 def test_collection_names_globs_under_library_root(wiki: Wiki) -> None:
-    """``collection_names(wiki)`` reads from the library registry (Task 4).
-
-    Task 4 relocated the collection config from the wiki's
-    ``$XDG_CONFIG_HOME/lies/<wiki>/collections/*.yaml`` to the library
-    singleton's ``<library>/collections/<slug>/config.yaml``. ``.tmp``
-    files in the wiki YAML dir are still ignored (legacy defensive
-    code), but they no longer affect the answer.
-    """
+    """``collection_names(wiki)`` reads from the library registry (Task 4)."""
     from lies.library.paths import Library
 
     lib = Library.open()

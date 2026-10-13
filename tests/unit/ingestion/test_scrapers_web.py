@@ -30,13 +30,7 @@ def test_web_scraper_prefers_llms_full_txt(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_web_scraper_handles_404(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When both candidates 404, the loop must exhaust and raise ScraperFetchFailed.
-
-    The production code's `except (HTTPError, URLError)` clause is what
-    lets the loop try the second candidate. The mock must raise one of
-    those exceptions so the except clause is exercised; otherwise the
-    test passes by accident because the first exception propagates.
-    """
+    """When both candidates 404, the loop must exhaust and raise ScraperFetchFailed."""
     urls_called: list[str] = []
 
     def fake_urlopen(req):
@@ -104,11 +98,7 @@ def test_web_scraper_accepts_direct_llms_full_txt_url(
 def test_web_scraper_walks_up_path_to_find_llms_txt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Source points deep into a docs path. Walk parent dirs until llms.txt exists.
-
-    Repro: user pastes ``https://code.claude.com/docs/en/overview``;
-    canonical ``llms.txt`` is at ``https://code.claude.com/llms.txt``.
-    """
+    """A source pointing deep into a docs path walks up until ``llms.txt`` appears."""
     urls_called: list[str] = []
 
     def fake_urlopen(req):
@@ -138,8 +128,7 @@ def test_web_scraper_walks_up_path_to_find_llms_txt(
 def test_web_scraper_falls_back_when_full_redirects_away(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """llms-full.txt 302s to an unrelated URL -- treat as 'does not exist' and
-    try llms.txt next. Repro: code.claude.com sends 302 to a marketing page."""
+    """Llms-full.txt 302s to an unrelated URL -- treat as 'does not exist' and try llms.txt next."""
     urls_called: list[str] = []
 
     def fake_urlopen(req):
@@ -196,11 +185,7 @@ def test_web_scraper_raises_when_no_candidate_matches(
 def test_web_scraper_sends_browser_user_agent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Some docs hosts return 403 to ``Python-urllib/x.y`` and only serve
-    llms.txt to a browser UA. The scraper must set a UA so the static fetch
-    is not pre-filtered before the path-walk / redirect logic ever runs.
-    Repro: code.claude.com.
-    """
+    """Some docs hosts return 403 to ``Python-urllib/x.y`` and only serve llms.txt to a browser UA."""
     seen_headers: list[dict[str, str]] = []
 
     def fake_urlopen(req):
@@ -274,19 +259,7 @@ def test_web_scraper_parse_index_follows_links(
 def test_web_scraper_parse_index_does_not_emit_index_marker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`WebScraper._parse_index` does not emit `_index.md` (defect-3 root-cause fix).
-
-    Regression pin: the prior implementation appended a
-    ``ParsedDoc(path="_index.md", content=<llms.txt body>)`` to the
-    emitted docs, on the rationale that "the index body should survive
-    for downstream reference". No consumer of `_index.md` exists. The
-    library's slug regex (``^[a-z0-9][a-z0-9_-]{0,127}$``) rejects
-    underscore-prefixed stems — emitting `_index.md` therefore forces
-    a ``SlugError`` that propagates uncaught out of ``_process_item``,
-    aborting the whole `lies ingest` run on item #0. The fix drops
-    the unused emission in the parser; today `_parse_index` returns
-    one doc per child URL only.
-    """
+    """``WebScraper._parse_index`` does not emit ``_index.md``."""
     fetched_urls: list[str] = []
 
     def fake_urlopen(req, *args, **kwargs):
@@ -368,16 +341,7 @@ def test_web_scraper_parse_chunked_when_source_is_full(
 def test_web_scraper_resolves_relative_links_against_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """llms.txt with relative link targets (e.g. ``/docs/foo.md``) resolves against source URL.
-
-    Repro for the bug where every relative link in the manifest
-    failed with ``urllib.request.Request`` raising ``ValueError:
-    unknown url type`` and the index yielded zero docs.
-
-    Each relative link must be resolved via :func:`urllib.parse.urljoin`
-    against the source URL before the fetch; the resolved absolute
-    URL is what ``urlopen`` sees.
-    """
+    """Llms.txt with relative link targets (e.g. ``/docs/foo.md``) resolves against source URL."""
     index_body = (
         "# MiniMax Docs\n\n"
         "- [Page A](/docs/api/overview.md): first page\n"
@@ -440,15 +404,7 @@ def test_web_scraper_parse_chunked_when_no_source(
 def test_web_scraper_extract_llms_links_handles_bare_links(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """llms.txt indexes with bare ``- [Title](url)`` links (no description
-    after a colon) extract every link — one per line.
-
-    Regression pin for an earlier ``\\s*`` regex that consumed newlines:
-    with bare links, the lazy ``(.*?)`` description group swallowed the
-    next line as its "description" because the trailing ``\\s*$``
-    allowed matches to span newlines. Only every-other link survived.
-    Repro: https://opencode.ai/v2/llms.txt (55 entries, all bare).
-    """
+    """Llms.txt indexes with bare ``- [Title](url)`` links (no description after a colon) extract every link — one per line."""
     body = (
         "# OpenCode V2 Docs\n\n"
         "- [Intro](https://example.com/docs/)\n"

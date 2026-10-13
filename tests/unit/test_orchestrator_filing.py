@@ -27,13 +27,7 @@ def test_format_heading_path_joins() -> None:
 
 
 def test_render_evidence_empty_heading_path_renders_single_paren() -> None:
-    """Regression: empty ``heading_path`` must render as ``(top of page)``.
-
-    ``_format_heading_path`` returns the bare ``top of page`` phrase;
-    ``_render_evidence`` wraps it in ``( )``. Pin the exact rendered
-    form so future edits don't reintroduce the
-    ``((top of page))`` double-paren.
-    """
+    """Empty ``heading_path`` must render as ``(top of page)``."""
     from lies.query.citation import Citation, ClaimCitation
 
     citations = [
@@ -108,13 +102,7 @@ def test_render_evidence_emits_span_heading_inline() -> None:
 
 
 def test_render_evidence_emits_bare_slug() -> None:
-    """Regression: real F19 synthesizer emits ``e.slug`` (bare) as the citation path.
-
-    ``Citation(path="concepts/pydantic", source="wiki", ...)`` must
-    render as ``[[concepts/pydantic]] (H1): "verbatim"`` — NOT
-    ``[[pydantic]]`` (the previous ``_slug_from_path`` regression
-    dropped the first segment when the bare slug contained a slash).
-    """
+    """Real F19 synthesizer emits ``e.slug`` (bare) as the citation path."""
     from lies.query.citation import Citation, ClaimCitation
 
     citations = [

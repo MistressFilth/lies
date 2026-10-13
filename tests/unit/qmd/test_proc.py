@@ -1,13 +1,4 @@
-"""Tests for the _qmd_proc subprocess seam.
-
-The seam wraps :func:`lies.qmd._subprocess._run_qmd` (the deadlock-
-free helper introduced by Spec A of the qmd-drain plan) so qmd
-library functions can be tested without shelling out to a real
-``qmd`` binary. Tests for ``qmd_cleanup`` and ``qmd_reindex`` (F38)
-patch ``_qmd_proc.run`` to exercise the per-stage sequencing, error
-handling, and the force cache-wipe path without invoking a real qmd
-binary.
-"""
+"""Tests for the _qmd_proc subprocess seam."""
 
 from __future__ import annotations
 

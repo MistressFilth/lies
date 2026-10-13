@@ -212,11 +212,7 @@ def test_reconcile_skips_malformed_body(tmp_path: Path) -> None:
 
 
 def test_reconcile_walks_ingest_tagged_commits(tmp_path: Path) -> None:
-    """F2: ``ingest:``-prefixed commits must also be reconciled.
-
-    Broadened regex / git-log grep must accept any lowercase tag, not just
-    ``memory:``. The rationale capture must keep working for the post-`:` body.
-    """
+    """F2: ``ingest:``-prefixed commits must also be reconciled."""
     wiki = _wiki(tmp_path)
     body = (
         "Pages: wiki/entities/postgres.md, wiki/concepts/schemas.md\nOps: create=2\nEvidence: 4\n"
@@ -246,12 +242,7 @@ def test_reconcile_walks_ingest_tagged_commits(tmp_path: Path) -> None:
 def test_git_log_filter_matches_ingest_prefix_via_stub(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Stubbed subprocess.run: assert broadened grep + rationale parsing for ingest:.
-
-    The stub stands in for git's own --grep filtering; we assert two things:
-    1. The function passes -E (extended regex) and the broadened ``--grep``.
-    2. The rationale capture strips the ``ingest:`` prefix correctly.
-    """
+    """Stubbed subprocess.run: assert broadened grep + rationale parsing for ingest:."""
     captured: dict[str, object] = {}
 
     fake_proc = subprocess.CompletedProcess(

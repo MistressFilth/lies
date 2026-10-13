@@ -1,9 +1,4 @@
-"""Pin dispatch paths the PromptsAsTools transform does NOT cover.
-
-``test_prompts_as_tools::test_get_prompt_tool_is_callable`` covers the
-generated-tool end-to-end; this file covers the Prompt-object and
-``mcp.get_prompt`` paths directly.
-"""
+"""Dispatch paths the PromptsAsTools transform does NOT cover."""
 
 from __future__ import annotations
 

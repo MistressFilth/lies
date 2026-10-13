@@ -456,34 +456,7 @@ def orch(tmp_path: Path) -> Orchestrator:
 
 
 def test_run_lint_end_to_end_with_linter_categories(orch: Orchestrator) -> None:
-    """End-to-end: real merge + real repair flow against the fixture wiki.
-
-    Seeds cross-mention pages (alpha, beta), one missing source, one
-    orphan (lonely). Mocks the linter sub-agent to add one
-    contradiction finding (``safe_to_fix=False``). Then mocks ONLY
-    the repair agent's outer LLM dispatch (instance-level) to return
-    a ``RepairPlan`` with one ``UpdateIndex`` for the orphan and one
-    ``AppendLink`` for a missing_xref — both safe-to-fix. The mock
-    captures the ``RepairAgentDeps`` it received so the test can
-    assert the safety filter at both ends: the contradiction reached
-    the repair agent with ``safe_to_fix=False``, and the returned
-    plan has no op referencing the contradiction finding.
-
-    Everything else is real:
-    - ``_build_lint_report`` is mocked to return a controlled report
-      so the test plan can reference known findings (the validator
-      requires ``op.pages`` to intersect the referenced finding's
-      pages; the real shell's findings would not line up with the
-      plan's hand-written indices);
-    - ``_call_linter`` is mocked at the orchestrator boundary (returns
-      the contradiction);
-    - ``_run_repair_agent`` reads page texts, calls the real
-      repair-agent dispatch (mocked at instance level), and unwraps
-      ``.output``;
-    - ``_apply_repair_plan`` goes through ``WikiMemoryService`` —
-      flock, snapshot, write, atomic_commit, qmd refresh;
-    - ``_render_lint_report`` writes ``wiki/lint-report.md``.
-    """
+    """End-to-end: real merge + real repair flow against the fixture wiki."""
     from lies.agents.linter import LintFinding, LintReport, LintSeverity
     from lies.agents.repair import RepairAgentDeps
     from lies.orchestrator import _build_lint_report
@@ -659,15 +632,7 @@ def test_run_lint_end_to_end_with_linter_categories(orch: Orchestrator) -> None:
 
 
 def test_run_lint_repair_agent_receives_shell_page_texts(orch: Orchestrator) -> None:
-    """Shell findings carry wiki-dir-relative paths so ``RepairAgentDeps.page_texts``
-    is populated for every shell finding's referenced page.
-
-    Regression for the path-convention mismatch where shell findings
-    emitted repo-root-relative ``wiki/concepts/a.md`` paths and the
-    repair agent's ``layout.wiki_dir / page`` lookup landed on
-    ``wiki/wiki/concepts/a.md`` (a non-existent file), silently
-    breaking the repair plan synthesis.
-    """
+    """Shell findings carry wiki-dir-relative paths so ``RepairAgentDeps.page_texts`` is populated for every shell finding's referenced page."""
     from lies.agents.repair import RepairAgentDeps
 
     base = orch.wiki.wiki_dir
@@ -714,22 +679,7 @@ def test_run_lint_repair_agent_receives_shell_page_texts(orch: Orchestrator) -> 
 
 
 def test_run_lint_end_to_end_linter_unavailable(orch: Orchestrator) -> None:
-    """Real ``_call_linter`` catches a raised ``run_sync`` and falls back.
-
-    Drops the ``_call_linter`` mock and patches the underlying
-    ``_linter_agent.run_sync`` with a ``side_effect`` that raises
-    ``RuntimeError("model offline")``. Instance-level patching (not
-    class-level) means the orchestrator's main ``_agent`` and any
-    other sub-agents are unaffected — only the linter's dispatch is
-    stubbed.
-
-    The real ``_call_linter`` exception handler converts the raised
-    exception into the fallback tuple. The real merge, the real
-    ``_render_lint_report``, the real file writes to
-    ``wiki/lint-report.md``, and the real log append all run. The
-    shell's orphan finding survives in the merged report and the
-    ``### Sources`` footer must carry the formatted fallback line.
-    """
+    """Real ``_call_linter`` catches a raised ``run_sync`` and falls back."""
     base = orch.wiki.wiki_dir
     (base / "concepts").mkdir(exist_ok=True)
     (base / "concepts" / "lonely.md").write_text(

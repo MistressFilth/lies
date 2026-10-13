@@ -1,10 +1,4 @@
-"""Integration test for F29 ``lies wiki provenance`` end-to-end.
-
-Confirms the helper + CLI + catalog layer agree when a synthesis page
-is written via the real ``Orchestrator.file_back_author`` path (not a
-fixture-driven upsert). Marker: ``integration`` (Makefile gates on
-``INTEGRATION=1``).
-"""
+"""Integration test for F29 ``lies wiki provenance`` end-to-end."""
 
 from __future__ import annotations
 

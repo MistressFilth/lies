@@ -1,25 +1,4 @@
-"""Wall-clock budget for `import lies.cli` and `lies --help`.
-
-These are soft perf gates. The numbers below are calibrated to a
-moderately-loaded dev machine; CI may need to relax the bounds
-further via the `LIES_PERF_BUDGET` env var (multiplier) or skip
-the test entirely under `SKIP_PERF=1`.
-
-Two thresholds, two different things:
-
-- **`import lies.cli` in-process time** — measures the actual Python
-  import. We do this by running `python -c "import time; t0=...;
-  import lies.cli; print(time.perf_counter() - t0)"` in a subprocess
-  and reading the printed value, so the measurement excludes
-  `uv run` startup overhead. The lazy-cli-imports refactor targets
-  this: it should drop meaningfully vs. the pre-refactor baseline.
-
-- **`lies --help` wall-clock time** — measures the user-perceived
-  latency of running the command. This INCLUDES the `uv run`
-  interpreter spin-up (~400ms on this hardware), which is outside
-  the refactor's reach. The budget is set above the import-time
-  budget for that reason.
-"""
+"""Wall-clock budget for `import lies.cli` and `lies --help`."""
 
 from __future__ import annotations
 
@@ -79,14 +58,7 @@ def test_import_lies_cli_under_threshold() -> None:
 @pytest.mark.skipif(os.environ.get("SKIP_PERF") == "1", reason="perf test skipped")
 @pytest.mark.slow
 def test_lies_help_wall_clock_under_threshold() -> None:
-    """`lies --help` (full wall clock) should not exceed the budget.
-
-    Uses ``typer.testing.CliRunner`` rather than a fresh subprocess:
-    the budget guards the in-process CLI startup cost (model-free path),
-    not Python interpreter spin-up. The lazy-imports refactor targets
-    exactly this code path. Spinning up a separate interpreter would
-    re-add hundreds of ms of noise unrelated to the refactor.
-    """
+    """`lies --help` (full wall clock) should not exceed the budget."""
     from typer.testing import CliRunner
 
     from lies.cli import app

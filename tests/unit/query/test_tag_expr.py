@@ -230,14 +230,7 @@ def test_parse_query_argv_dangling_operator_error_message():
 
 
 def test_parse_query_argv_realistic_bash_quoted_tag():
-    """Real bash strips outer quotes; internal space is preserved as one atom.
-
-    `python script.py +"airflow provider" what is X?` produces
-    argv = ["+airflow provider", "what", "is", "X?"]. The shell
-    word-split on whitespace does NOT split inside a quoted
-    segment; the parser must treat the argv element with
-    internal whitespace as a single atom.
-    """
+    """Real bash strips outer quotes; internal space is preserved as one atom."""
     argv = ["+airflow provider", "what", "is", "X?"]
     question, include_ast, exclude_ast, _ = parse_query_argv(argv)
     assert question == "what is X?"
@@ -266,13 +259,7 @@ def test_render_include_round_trip_multiatom_with_internal_space():
 
 
 def test_parse_query_argv_exclude_and_chain():
-    """``-c:foo&c:bar`` builds an And-tree on the exclude half.
-
-    Mirrors the include chain's operator split: ``_split_argv_token_for_ops``
-    breaks the embedded ``&`` outside any quoted segment, then ``parse_tokens``
-    builds the tree. The fourth tuple element is always ``None`` because
-    the qualifier lives on each ``Include`` atom.
-    """
+    """``-c:foo&c:bar`` builds an And-tree on the exclude half."""
     argv = ["-c:foo&c:bar", "What is X?"]
     question, include_ast, exclude_ast, fourth = parse_query_argv(argv)
     assert question == "What is X?"
@@ -285,11 +272,7 @@ def test_parse_query_argv_exclude_and_chain():
 
 
 def test_parse_query_argv_exclude_or_chain():
-    """``-c:foo|c:bar`` builds an Or-tree on the exclude half.
-
-    ``|`` is the lower-precedence binary operator; ``parse_tokens`` builds
-    the ``Or`` node directly. Same qualifier-on-atom contract as And.
-    """
+    """``-c:foo|c:bar`` builds an Or-tree on the exclude half."""
     argv = ["-c:foo|c:bar", "What is X?"]
     question, include_ast, exclude_ast, fourth = parse_query_argv(argv)
     assert question == "What is X?"
@@ -302,13 +285,7 @@ def test_parse_query_argv_exclude_or_chain():
 
 
 def test_parse_query_argv_exclude_precedence_and_binds_tighter():
-    """``-c:foo&c:bar|t:baz`` builds Or(And(...), Include) — & first.
-
-    Mirrors the include chain's precedence: ``&`` binds tighter than ``|``,
-    so the AST is ``Or(And(Include("foo", "c"), Include("bar", "c")), Include("baz", "t"))``.
-    Regression for the case where the original exclude peel only took one
-    atom and silently dropped the rest of the chain (session 82a266a9).
-    """
+    """``-c:foo&c:bar|t:baz`` builds Or(And(...), Include) — & first."""
     argv = ["-c:foo&c:bar|t:baz", "What is X?"]
     question, include_ast, exclude_ast, fourth = parse_query_argv(argv)
     assert question == "What is X?"
@@ -324,13 +301,7 @@ def test_parse_query_argv_exclude_precedence_and_binds_tighter():
 
 
 def test_parse_query_argv_exclude_chain_across_argv_tokens():
-    """``-c:foo &c:bar`` (split across argv tokens) builds the And-tree.
-
-    Realistic bash delivers operator-then-atom as a separate argv token
-    (e.g. ``-c:foo '&c:bar' What?``); the loop absorbs it when the next
-    token starts with ``&`` / ``|``. The flat list after splitting is
-    ``["c:foo", "&", "c:bar"]`` and ``parse_tokens`` builds the And.
-    """
+    """``-c:foo &c:bar`` (split across argv tokens) builds the And-tree."""
     argv = ["-c:foo", "&c:bar", "What?"]
     question, include_ast, exclude_ast, fourth = parse_query_argv(argv)
     assert question == "What?"
@@ -346,15 +317,7 @@ def test_parse_query_argv_exclude_chain_across_argv_tokens():
 
 
 def test_split_argv_token_for_ops_keeps_qualifier_attached():
-    """`c:opencode|c:claude_platform` shlex-splits on `|` only; qualifier
-    colon stays glued to its atom so downstream parse_tokens sees a clean
-    token list (`["c:opencode", "|", "c:claude_platform"]`).
-
-    Regression for session 82a266a9 line 61: a slash command tokenized
-    `+c:opencode|c:claude_platform` as one argv token. Without `:` in
-    wordchars, shlex split it into `["c", ":", "opencode", ...]` and
-    parse_tokens choked on the leaked `":"` token.
-    """
+    """`c:opencode|c:claude_platform` shlex-splits on `|` only."""
     from lies.query.tag_expr import _split_argv_token_for_ops, parse_tokens
 
     tokens = _split_argv_token_for_ops("c:opencode|c:claude_platform")
@@ -560,15 +523,7 @@ def test_round_trip_with_qualifier():
 
 
 def test_resolved_tag_filter_exclude_carries_ast():
-    """Task 3: ``ResolvedTagFilter.exclude`` is a ``TagExpr | None`` AST.
-
-    The flat-string ``exclude`` field was retired in favor of the
-    same ``TagExpr`` AST shape the include side already used, so
-    compound excludes (``-c:foo&c:bar``, ``-c:foo|c:bar``) thread
-    through unchanged. The historical ``exclude_qualifier`` field
-    is gone — the qualifier now lives on each ``Include`` atom in
-    the tree.
-    """
+    """``ResolvedTagFilter.exclude`` is a ``TagExpr | None`` AST, not a flat string."""
     exclude_tree = Or(Include("foo", qualifier="c"), Include("bar", qualifier="c"))
     f = ResolvedTagFilter(include=None, exclude=exclude_tree)
     assert f.exclude == exclude_tree
@@ -586,12 +541,7 @@ def test_resolved_tag_filter_exclude_and_tree():
 
 
 def test_resolve_validates_exclude_tree():
-    """``resolve(include, exclude=, available=)`` validates the exclude tree too.
-
-    Both halves of the F15 grammar share the same recursive
-    validation walk. An unknown atom on the exclude side raises
-    ``TagExprUnknown`` just like the include side does.
-    """
+    """``resolve(include, exclude=, available=)`` validates the exclude tree too."""
     include_tree = parse_include("airflow")
     exclude_tree = parse_include("amazon")  # available
     result = resolve(
@@ -700,17 +650,7 @@ def test_atom_matches_c_does_not_match_unrelated():
 
 
 def test_exclude_matches_c_strict():
-    """``exclude_matches`` with a ``c``-qualified atom matches only the named collection.
-
-    Task 3 / f15-exclude-compound: the legacy single-atom
-    ``_exclude_atom_matches`` shim was replaced by a recursive
-    ``exclude_matches(coll, tree)`` walker that dispatches every leaf
-    through ``atom_matches`` so compound excludes
-    (``-c:foo&c:bar``, ``-c:foo|c:bar``) drop on the same dispatcher.
-    A single-atom ``Include(..., qualifier="c")`` is the simplest tree
-    the walker accepts; it must behave identically to the historical
-    ``_exclude_atom_matches(coll, "foo", "c")``.
-    """
+    """``exclude_matches`` with a ``c``-qualified atom matches only the named collection."""
     from lies.query.tag_expr import exclude_matches
 
     airflow = _make_collection(name="airflow", tags=["provider"])
@@ -720,13 +660,7 @@ def test_exclude_matches_c_strict():
 
 
 def test_exclude_matches_no_qualifier_aliases_t():
-    """``exclude_matches`` with no qualifier (or explicit ``t``) aliases t: semantics.
-
-    Mirrors ``test_atom_matches_no_qualifier_aliases_t`` on the include
-    side. A bare ``Include("foo")`` matches collections named ``foo``
-    OR tagged ``foo``; an explicit ``Include("foo", qualifier="t")``
-    behaves identically (same dispatch).
-    """
+    """``exclude_matches`` with no qualifier (or explicit ``t``) aliases t: semantics."""
     from lies.query.tag_expr import exclude_matches
 
     airflow = _make_collection(name="airflow", tags=["provider"])
@@ -738,12 +672,7 @@ def test_exclude_matches_no_qualifier_aliases_t():
 
 
 def test_exclude_matches_t_strict():
-    """``exclude_matches`` with explicit ``t`` qualifier matches name-or-tag.
-
-    Same dispatch as the no-qualifier form (``atom_matches`` treats
-    ``None`` and ``"t"`` identically). A collection named ``foo`` and
-    a collection tagged ``foo`` both match.
-    """
+    """``exclude_matches`` with explicit ``t`` qualifier matches name-or-tag."""
     from lies.query.tag_expr import exclude_matches
 
     airflow = _make_collection(name="airflow", tags=["provider"])
@@ -806,14 +735,7 @@ def test_check_qualifier_quoted_atom_preserved():
 
 
 def test_parse_tokens_empty_body_errors():
-    """`c:` and `t:` (empty body) raise TagExprParseError on the include side,
-    mirroring the exclude side's behavior in check_qualifier.
-
-    Per PR #64 review — empty-body include consistency. Before this fix,
-    parse_tokens silently produced Include(tag='c:', qualifier=None) which
-    then confused the resolver with "unknown tag: 'c:'". The exclude side
-    already raised cleanly via check_qualifier.
-    """
+    """`c:` and `t:` (empty body) raise TagExprParseError on the include side, mirroring the exclude side's behavior in check_qualifier."""
     from lies.query.tag_expr import TagExprParseError, parse_query_argv, parse_tokens
 
     # Direct token-level access — the include-side parse_atom path.
@@ -889,11 +811,7 @@ def test_parse_query_argv_exclude_bare_or_op():
 
 
 def test_parse_query_argv_dangling_bare_op_still_errors():
-    """Trailing bare `&` with no following token raises dangling-operator.
-
-    Ensures the new bare-operator branch doesn't swallow the dangling
-    case — `-c:foo &` with no atom after `&` must still error.
-    """
+    """Trailing bare `&` with no following token raises dangling-operator."""
     from lies.query.tag_expr import TagExprParseError, parse_query_argv
 
     with pytest.raises(TagExprParseError) as exc:

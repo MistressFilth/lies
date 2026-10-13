@@ -1,21 +1,4 @@
-"""CLI tests for the ``lies query`` tag-filter surface (Bundle C / F15).
-
-``lies query`` takes variadic positional tokens now. The argv walker
-peels an optional ``+`` include chain and an optional ``-`` exclude
-atom off the front; whatever remains joins with single spaces into
-the question. An explicit ``--tag-expr`` / ``--exclude-tag`` form is
-accepted for callers that don't want the prefix syntax; it mirrors
-the MCP tool's argument shape and converges on the same
-``ResolvedTagFilter``.
-
-Back-compat is the load-bearing contract: both the quoted single-token
-form (``lies query "what is X?"``) and the shell-split bare form
-(``lies query what is X?`` → tokens ``["what", "is", "X?"]``) must
-still reach the orchestrator with ``tag_filter=None``.
-
-Grammar and resolver errors (``TagExprParseError``, ``TagExprUnknown``)
-exit 2 per the spec's error model.
-"""
+"""CLI tests for the ``lies query`` tag-filter surface (Bundle C / F15)."""
 
 from __future__ import annotations
 
@@ -140,12 +123,7 @@ def test_query_quoted_question_back_compat(wiki: Wiki) -> None:
 
 
 def test_query_shell_split_bare_form(wiki: Wiki) -> None:
-    """Unquoted `lies query what is X?` arrives shell-split and rejoins.
-
-    Pins the back-compat contract for the variadic positional: no token
-    starts with ``+`` or ``-``, so no filter is parsed and the tokens
-    join with single spaces.
-    """
+    """Unquoted `lies query what is X?` arrives shell-split and rejoins."""
     result, call = _invoke("what", "is", "X?")
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what is X?"
@@ -278,13 +256,7 @@ def test_query_dangling_operator_exits_2(wiki: Wiki) -> None:
 
 @pytest.mark.slow
 def test_query_cli_plus_c_qualifier(wiki: Wiki) -> None:
-    """``+c:airflow`` parses to ``Include(tag='airflow', qualifier='c')``.
-
-    The argv splitter peels ``+`` off the front, then ``parse_tokens``
-    strips the ``c:`` qualifier. The CLI's compat layer renders the
-    include AST back to ``tag_expr='c:airflow'`` so the F18
-    ``librarian_agent`` sees the qualified atom.
-    """
+    """``+c:airflow`` parses to ``Include(tag='airflow', qualifier='c')``."""
     result, call = _invoke("+c:airflow", "what", "is", "X?")
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what is X?"
@@ -293,13 +265,7 @@ def test_query_cli_plus_c_qualifier(wiki: Wiki) -> None:
 
 
 def test_query_cli_t_python_c_python_exclude(wiki: Wiki) -> None:
-    """Canonical example: ``+t:python -c:python`` resolves both qualifiers.
-
-    The CLI renders ``t:python`` into ``tag_expr`` and strips the
-    ``c:`` prefix from the exclude (the F18 ``librarian_agent``
-    consumes the body, not the qualifier; only the MCP path keeps
-    the ``exclude_qualifier`` on the wire).
-    """
+    """Canonical example: ``+t:python -c:python`` resolves both qualifiers."""
     result, call = _invoke("+t:python", "-c:python", "what", "is", "X?")
     assert result.exit_code == 0, result.output
     assert call.args[0] == "what is X?"
@@ -339,13 +305,7 @@ def test_query_cli_bad_qualifier_on_exclude_exits_2(wiki: Wiki) -> None:
 
 
 def test_query_explicit_empty_tag_expr_exits_2(wiki: Wiki) -> None:
-    """``--tag-expr ""`` raises ``TagExprEmpty`` via CLI → exit 2.
-
-    Empty string must reach ``parse(...)`` so it raises ``TagExprEmpty``;
-    the falsy-``tag_expr`` shortcut silently swallowed it before, so
-    the explicit form diverged from MCP behavior. MCP already raises
-    ``ToolError("empty tag expression: ...")`` at the same input.
-    """
+    """``--tag-expr ""`` raises ``TagExprEmpty`` via CLI → exit 2."""
     result, _ = _invoke("what", "is", "X?", "--tag-expr", "")
     assert result.exit_code == 2
     assert "no atoms" in result.output

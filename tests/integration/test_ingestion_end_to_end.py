@@ -1,13 +1,4 @@
-"""Integration test for the XDG-routed ingestion pipeline.
-
-Asserts that ``lies sync`` lands the mirror file under the library
-singleton (Phase-2 retargeting, Task 11) at
-``$XDG_DATA_HOME/lies/library/collections/<c>/<slug>.md``. Wiki still
-hosts the collection YAML + flock + qmd-side resolution; the write
-target moved.
-
-The test uses a name-based wiki and exercises ``lies sync <c>`` end-to-end.
-"""
+"""Integration test for the XDG-routed ingestion pipeline."""
 
 from __future__ import annotations
 

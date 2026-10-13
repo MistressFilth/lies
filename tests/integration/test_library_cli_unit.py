@@ -1,14 +1,4 @@
-"""Tests for the ``lies ingest`` CLI (Task 10).
-
-The command is registered directly on the root ``app`` via
-``lies.library.cli.register`` (no intermediate sub-app wrapper). The
-canonical user-facing invocation is ``lies ingest --source <PATH>`` or
-``lies ingest --batch <DIR>``.
-
-These tests cover the CLI wiring only (no actual ingest path is
-exercised; the unit tests for ``run_source_ingest`` /
-``run_batch_ingest`` live in ``test_ingest.py``).
-"""
+"""Tests for the ``lies ingest`` CLI (Task 10)."""
 
 from __future__ import annotations
 
@@ -43,24 +33,7 @@ def test_ingest_help_lists_source_and_batch() -> None:
 
 
 def test_canonical_ingest_invocation_is_reachable() -> None:
-    """The spec-mandated ``lies ingest --source <PATH>`` form reaches the command body.
-
-    Exercises the full CLI path (root app -> ``ingest`` command -> body
-    entry). With no actual library configured, the body fails inside the
-    library bootstrap, NOT with a Typer "no such command" / "missing
-    argument" error. The exit code being non-zero is acceptable; what we
-    pin is that the command was matched and dispatched (no
-    ``Usage:``-style help dump, no ``No such command``).
-
-    Minor 49: previous assertion used
-    ``"Usage:" not in combined or "--source" in combined`` which
-    silently passed when both substrings appeared together (the
-    ``--help`` dump contains BOTH ``Usage:`` AND ``--source``). The
-    strengthened form forbids the help dump unconditionally. The
-    dedicated ``--help`` test
-    (``test_ingest_help_lists_source_and_batch``) covers the help text
-    separately.
-    """
+    """The spec-mandated ``lies ingest --source <PATH>`` form reaches the command body."""
     result = runner.invoke(app, ["ingest", "--source", "/tmp/does-not-exist"])
     combined = _strip_ansi(result.stdout) + _strip_ansi(result.stderr or "")
     assert "No such command" not in combined, (
@@ -80,12 +53,7 @@ def test_help_text_mentions_library() -> None:
 
 
 def test_coerce_source_preserves_url_double_slash(tmp_path: Path) -> None:
-    """C1: a URL string passes through with the scheme slash intact.
-
-    ``Path("https://...")`` collapses to ``PosixPath('https:/...')``
-    (single slash after scheme). The fetcher's URL-prefix check would
-    reject that. The CLI must hand the URL through verbatim.
-    """
+    """A URL string passes through with the scheme slash intact."""
     url = "https://example.com/llms.txt"
     coerced = _coerce_source(url)
     assert coerced == url
@@ -109,12 +77,7 @@ def test_coerce_source_none_returns_none() -> None:
 def test_ingest_single_source_url_reaches_fetcher_intact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """C1 anti-tautology: ``--source <URL>`` reaches the fetcher with double slashes.
-
-    A stubbed fetcher records the source value it received; we assert
-    the URL was passed through verbatim (no scheme mangling). This
-    pins the ``lies ingest --source https://...`` end-to-end contract.
-    """
+    """``--source <URL>`` reaches the fetcher with double slashes."""
     from lies import xdg
 
     monkeypatch.setattr(xdg, "data_home", lambda: tmp_path / "data")
@@ -170,12 +133,7 @@ def test_ingest_single_source_url_reaches_fetcher_intact(
 def test_ingest_single_source_passes_slug_and_title_kwargs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """I8: ``--slug custom --title "Test"`` threads through to the mirror frontmatter.
-
-    The mirror filename ends in ``custom.md`` and the frontmatter has
-    ``title: "Test"`` (not the slug-derived default). The fetcher
-    stub yields one FetchItem so the pipeline writes exactly one mirror.
-    """
+    """``--slug custom --title "Test"`` threads through to the mirror frontmatter."""
     from lies import xdg
 
     monkeypatch.setattr(xdg, "data_home", lambda: tmp_path / "data")

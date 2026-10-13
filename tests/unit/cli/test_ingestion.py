@@ -185,10 +185,7 @@ def test_reindex_reconcile_sets_reconciled_true(
     mock_resolve_wiki: MagicMock,
     mock_qmd_reindex: MagicMock,
 ) -> None:
-    """``--reconcile`` populates ``result.reconciled = True`` in the printed
-    summary. Pins the F38 fix that wired ``sync_collection`` + wikilink build
-    into the ``ReindexResult.reconciled`` field.
-    """
+    """``--reconcile`` populates ``result.reconciled = True`` in the printed summary."""
     with (
         patch.object(sync_helper, "sync_collection", return_value=MagicMock(errors=0)),
         patch.object(sync_helper, "collection_names", return_value=["c1"]),

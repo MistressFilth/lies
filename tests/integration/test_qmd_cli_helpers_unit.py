@@ -191,22 +191,7 @@ def test_qmd_embed_invokes_per_collection_flag(
 def test_qmd_embed_default_timeout_is_thirty_minutes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Default timeout = 1800 s. Override path takes the kwarg value.
-
-    The idle bound tracks the total bound rather than staying at the 30 s
-    default, because ``qmd embed`` is silent for its entire duration under a
-    pipe: it writes one stderr spinner escape and then nothing while the
-    model loads and runs, so the silence is the operation, not a wedge. A
-    30 s idle bound killed it mid-progress (measured: 9.4 s of unbroken
-    silence for one tiny document on a cold cache; four collections under
-    host contention crossed 30 s). Retrieval commands keep the default — a
-    query silent for 30 s genuinely is wedged.
-
-    It tracks at a **fraction**, not at 1.0: the reader loop checks the total
-    bound first, so an idle bound equal to the total could never fire and
-    every kill would lose its ``last_output`` diagnostic. See
-    ``SILENT_COMMAND_IDLE_TIMEOUT_FRACTION``.
-    """
+    """Default timeout = 1800 s."""
     seen_timeouts: list[int] = []
     seen_idles: list[float | None] = []
     recorded: list[list[str]] = []
@@ -233,13 +218,7 @@ def test_qmd_embed_default_timeout_is_thirty_minutes(
 def test_run_keeps_the_default_idle_bound_for_other_commands(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Commands that are not embed leave the 30 s default in place.
-
-    The companion to the test above: raising embed's idle bound must not
-    silently raise it for everything. ``_run`` passes
-    ``DEFAULT_IDLE_TIMEOUT_S`` when the caller does not override, so a
-    retrieval call keeps the bound that catches a real wedge.
-    """
+    """Commands that are not embed leave the 30 s default in place."""
     seen: list[float] = []
 
     def fake(args, cwd, timeout, idle_timeout):

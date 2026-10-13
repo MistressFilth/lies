@@ -1,20 +1,4 @@
-"""End-to-end: init wiki -> query -> assert sidecar + lies memory + wiki_changes all surface the receipt.
-
-Gated on ``INTEGRATION=1`` like other integration tests in this repo
-(``tests/integration/test_sync_register_persistence.py``).
-
-The single ``test_query_writes_sidecar_visible_via_all_three_surfaces``
-test additionally requires a real provider API key (see the per-test
-``skipif`` below). It shells out to ``uv run lies query``, which
-loads the configured ``provider`` and hits the real network. Without
-a key the orchestrator's AnthropicProvider constructor crashes (or
-the request returns HTTP 401 once it does reach the wire); either
-way the test fails on environments that don't have a key configured,
-which is most local developer machines. The other surfaces exercised
-here (the CLI ``init`` step and ``lies memory``) don't talk to the
-provider, but they're entangled with the same subprocess so the
-whole flow is gated on the key.
-"""
+"""End-to-end: init wiki -> query -> assert sidecar + lies memory + wiki_changes all surface the receipt."""
 
 from __future__ import annotations
 

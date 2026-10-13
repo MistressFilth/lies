@@ -101,9 +101,7 @@ def test_qmd_reindex_force_drops_cache(tmp_path: Path) -> None:
 
 
 def test_qmd_reindex_force_cache_wipe_survives_cleanup_failure(tmp_path: Path) -> None:
-    """force=True exempts ONLY the ``.qmd/cache`` rmtree from the fail-fast
-    gate (Task 4 design). When cleanup fails: cache is wiped, update + embed
-    are still skipped, errors list carries the cleanup failure."""
+    """Force=True exempts ONLY the ``.qmd/cache`` rmtree from the fail-fast gate (Task 4 design)."""
     cache_dir = tmp_path / ".qmd" / "cache"
     cache_dir.mkdir(parents=True)
     marker = cache_dir / "marker"

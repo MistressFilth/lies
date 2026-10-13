@@ -1,21 +1,4 @@
-"""CLI tests for the ``lies query --format`` flag (F1).
-
-The --format flag accepts ``auto|md|table|marp``. Default is ``auto``
-(the synthesizer's format_hint). Explicit values force a re-synthesis
-path when they differ from the auto-route hint.
-
-These tests pin the flag-registration + dispatch contract at the CLI
-boundary; the override re-synthesis lives in the orchestrator (Task 7),
-so the override path's graceful fallback to the auto-route answer is
-also pinned here.
-
-Test discipline: ``Orchestrator`` and ``resolve_wiki`` are mocked at
-the ``lies.cli.__init__`` boundary (the project's existing
-convention; see ``tests/unit/test_query_cli.py`` and
-``tests/unit/cli/test_query_cli.py``). The query command body resolves
-both names through ``lies.cli`` so ``mock.patch("lies.cli.<name>")``
-intercepts the call without needing per-module indirection.
-"""
+"""CLI tests for the ``lies query --format`` flag (F1)."""
 
 from __future__ import annotations
 
@@ -157,13 +140,7 @@ def test_render_answer_chart_dispatch_with_mermaid_block(
 def test_render_answer_chart_dispatch_with_prose_only_body(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Prose-only body: stdout echoes the body unchanged; stderr warns.
-
-    The CLI pass-through contract: zero ``mermaid`` blocks → body
-    unchanged on stdout so the operator sees the original prose,
-    stderr carries the warning so the operator can re-query with
-    ``--format=md`` or refine the question.
-    """
+    """Prose-only body: stdout echoes the body unchanged; stderr warns."""
     from lies.cli.query_format import render_answer
 
     body = "This answer has no diagram at all, just prose.\n"
@@ -182,12 +159,7 @@ def test_render_answer_chart_dispatch_with_prose_only_body(
 def test_render_answer_chart_dispatch_with_empty_body(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Empty body: no stdout echo (avoid blank line before stderr); stderr warns.
-
-    The empty-body branch must NOT echo ``""`` to stdout — that would
-    print a blank line ahead of the warning. The CLI's contract is:
-    stderr warning only, stdout silent.
-    """
+    """Empty body: no stdout echo (avoid blank line before stderr); stderr warns."""
     from lies.cli.query_format import render_answer
 
     render_answer("chart", "")

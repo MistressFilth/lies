@@ -32,11 +32,7 @@ def qmd_lock_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str,
 
 
 def test_flock_qmd_status_no_holder(qmd_lock_paths: dict[str, Path]) -> None:
-    """`lies flock qmd status` with no lock present prints 'no flock held' and exits 2.
-
-    Exit code 2 matches the existing ``flock <name> status`` absent
-    convention so shell callers can branch on it without parsing text.
-    """
+    """`lies flock qmd status` with no lock present prints 'no flock held' and exits 2."""
     runner = CliRunner()
     result = runner.invoke(flock_app, ["qmd", "status"])
     assert result.exit_code == 2, (result.stdout or "") + (result.stderr or "")

@@ -1,22 +1,4 @@
-"""Unit tests for ``lies.qmd.integrity`` — read-only qmd index inspection.
-
-The module opens the qmd index read-only (``file:...?mode=ro``) at every
-entry point, because qmd has no read-only open mode. The connection
-helper :func:`open_readonly` is the only constructor — every test that
-exercises a read-only connection goes through it, so a future change
-that builds a writable connection elsewhere fails the moment the
-``test_a_write_against_the_index_is_rejected`` shape is touched.
-
-The schema in :func:`_tiny_index` mirrors the live schema
-(``store_collections``, ``content``, ``documents``,
-``content_vectors``) read off ``$XDG_CACHE_HOME/qmd/index.sqlite`` on
-2026-10-03 via ``.schema`` over a read-only connection. No triggers,
-no FTS5, no ``documents_fts`` — those are qmd internals and the
-integrity surface does not query them.
-
-Live values are not asserted against. The test fixtures build a known
-shape; the live index is a measurement, not a fixture.
-"""
+"""Unit tests for ``lies.qmd.integrity`` — read-only qmd index inspection."""
 
 from __future__ import annotations
 
@@ -138,14 +120,7 @@ def test_open_readonly_raises_when_the_index_does_not_exist(
 
 
 def test_a_write_against_the_index_is_rejected(tmp_path: Path, _empty_index_template: Path) -> None:
-    """The connection helper must open the database in mode=ro.
-
-    The shape — ``with pytest.raises(sqlite3.OperationalError):`` —
-    is from plan Step 4. It exercises :func:`open_readonly` itself,
-    not a locally-built connection, so a future change that swaps
-    the helper for a writable constructor fails the moment the
-    shape is touched.
-    """
+    """The connection helper must open the database in mode=ro."""
     db = _tiny_index(tmp_path, _empty_index_template)
     with pytest.raises(sqlite3.OperationalError):
         with closing(open_readonly(db)) as conn:
@@ -155,11 +130,7 @@ def test_a_write_against_the_index_is_rejected(tmp_path: Path, _empty_index_temp
 def test_orphans_are_content_vectors_rows_with_no_backing_content(
     tmp_path: Path, _empty_index_template: Path
 ) -> None:
-    """Plan Step 1 — one orphan hash, two rows.
-
-    The shape matches the live schema: ``content_vectors`` is keyed
-    by ``(hash, seq)`` so one hash can carry multiple chunk rows.
-    """
+    """One orphan hash, two rows: an orphan is a vector row with no backing content."""
     db = _tiny_index(tmp_path, _empty_index_template)
     with sqlite3.connect(str(db)) as conn:
         # One backing document: its content row exists, its vectors
@@ -203,10 +174,7 @@ def test_orphans_are_content_vectors_rows_with_no_backing_content(
 
 
 def test_a_clean_index_reports_zero_orphans(tmp_path: Path, _empty_index_template: Path) -> None:
-    """Every content_vectors row has a backing content row.
-
-    Pins the contract that ``qmd cleanup`` leaves the index in: 0/0.
-    """
+    """Every content_vectors row has a backing content row."""
     db = _tiny_index(tmp_path, _empty_index_template)
     with sqlite3.connect(str(db)) as conn:
         conn.execute(
@@ -256,22 +224,13 @@ def test_is_embedded_returns_false_for_an_unknown_hash(
 def test_is_embedded_returns_false_for_an_empty_hash(
     tmp_path: Path, _empty_index_template: Path
 ) -> None:
-    """An empty hash cannot match any row, by definition.
-
-    No row in ``content_vectors`` carries an empty ``hash`` (the
-    column is ``NOT NULL``), so the parametrised query returns
-    ``fetchone() is None``. The bool return is honest.
-    """
+    """An empty hash cannot match any row, by definition."""
     db = _tiny_index(tmp_path, _empty_index_template)
     assert is_embedded(db, "") is False
 
 
 def test_is_embedded_is_a_single_row_check(tmp_path: Path, _empty_index_template: Path) -> None:
-    """One row is enough — the count of rows is not the question.
-
-    The function answers "is there at least one row?" not "how
-    many?". Three rows for one hash still return ``True``.
-    """
+    """One row is enough — the count of rows is not the question."""
     db = _tiny_index(tmp_path, _empty_index_template)
     with sqlite3.connect(str(db)) as conn:
         for seq in range(3):
@@ -288,14 +247,7 @@ def test_is_embedded_is_a_single_row_check(tmp_path: Path, _empty_index_template
 def test_collection_drift_reports_missing_paths(
     tmp_path: Path, _empty_index_template: Path
 ) -> None:
-    """A registered path that does not exist on disk is drift.
-
-    Mirrors the live observation on 2026-10-03: ``wiki_tag-filter-lib``
-    is registered, holds 5 documents, but its path
-    ``/home/.../collections/wiki_tag-filter-lib`` no longer exists.
-    The function surfaces that as drift so the operator can either
-    restore the path or ``qmd collection remove`` the entry.
-    """
+    """A registered path that does not exist on disk is drift."""
     db = _tiny_index(tmp_path, _empty_index_template)
     present = tmp_path / "present"  # created below
     present.mkdir()
@@ -342,13 +294,7 @@ def test_collection_drift_is_empty_for_an_index_with_no_drift(
 def test_collection_drift_does_not_treat_empty_collections_as_drift(
     tmp_path: Path, _empty_index_template: Path
 ) -> None:
-    """An empty registered path is the ``wiki_default`` case, not drift.
-
-    The live ``wiki_default`` collection registers an empty directory
-    (``~/.local/share/lies/default/wiki``) with 0 files; that is the
-    qmd default wiki registration, expected, and ``lies sync`` will
-    populate it on demand. The function must not report it.
-    """
+    """An empty registered path is the ``wiki_default`` case, not drift."""
     db = _tiny_index(tmp_path, _empty_index_template)
     empty = tmp_path / "empty_wiki"
     empty.mkdir()  # exists, but contains no files
@@ -364,14 +310,7 @@ def test_collection_drift_does_not_treat_empty_collections_as_drift(
 def test_collection_drift_reports_multiple_messages_per_collection(
     tmp_path: Path, _empty_index_template: Path
 ) -> None:
-    """Future messages append rather than overwrite.
-
-    Today there is only one drift condition (missing path), so the
-    list always has length 0 or 1. The shape ``dict[str, list[str]]``
-    leaves room for more messages without a breaking change. This
-    test pins that today, against a future change that adds a second
-    condition and a hand-edit that collapses the list to a string.
-    """
+    """Future messages append rather than overwrite."""
     db = _tiny_index(tmp_path, _empty_index_template)
     with sqlite3.connect(str(db)) as conn:
         conn.execute(
@@ -399,14 +338,7 @@ def test_collection_drift_reports_multiple_messages_per_collection(
 def test_document_drift_reports_unregistered_collection_with_documents(
     tmp_path: Path, _empty_index_template: Path
 ) -> None:
-    """A collection name that has no registry row but holds documents is drift.
-
-    The shape mirrors ``collection_drift``: ``{collection_name:
-    [messages]}``. Today the message names the document count.
-    This is the drift class :class:`collection_drift` cannot
-    see by construction, and the union in
-    :func:`integrity_summary` is what surfaces it to operators.
-    """
+    """A collection name that has no registry row but holds documents is drift."""
     import sqlite3 as _sqlite3
 
     db = _tiny_index(tmp_path, _empty_index_template)
@@ -467,13 +399,7 @@ def test_document_drift_is_empty_when_every_document_is_registered(
 def test_qmd_index_path_resolves_under_xdg_cache_home(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _empty_index_template: Path
 ) -> None:
-    """The default index path is ``$XDG_CACHE_HOME/qmd/index.sqlite``.
-
-    Mirrors qmd's own ``getDefaultDbPath`` (verified in
-    ``@tobilu/qmd/dist/store.js:418-433``). LIES reads the same
-    path so ``lies qmd status`` inspects the index the daemon
-    serves, not a sibling.
-    """
+    """The default index path is ``$XDG_CACHE_HOME/qmd/index.sqlite``."""
     cache = tmp_path / "cache"
     monkeypatch.setenv("LIES_XDG_CACHE_HOME", str(cache))
     assert qmd_index_path() == cache / "qmd" / "index.sqlite"
@@ -482,16 +408,7 @@ def test_qmd_index_path_resolves_under_xdg_cache_home(
 def test_integrity_summary_returns_a_complete_snapshot(
     tmp_path: Path, _empty_index_template: Path
 ) -> None:
-    """``integrity_summary`` is the JSON shape ``lies qmd status`` prints.
-
-    The fields the plan's Step 6 names are all present:
-
-    - ``orphan_hashes`` and ``orphan_rows``
-    - ``documents_total`` and ``documents_active`` (the active-vs-total split)
-    - ``documents_active_without_vectors`` (every active doc has vectors?)
-    - ``collections``
-    - ``drift``
-    """
+    """``integrity_summary`` is the JSON shape ``lies qmd status`` prints."""
     db = _tiny_index(tmp_path, _empty_index_template)
     a = tmp_path / "a"
     a.mkdir()
@@ -532,13 +449,7 @@ def test_integrity_summary_returns_a_complete_snapshot(
 def test_integrity_summary_reports_active_docs_that_lack_vectors(
     tmp_path: Path, _empty_index_template: Path
 ) -> None:
-    """An active document with no ``content_vectors`` row is a coverage gap.
-
-    The plan's Step 6 says "whether every active document has
-    vectors". The boolean answer is encoded as the count of
-    documents that don't — ``0`` means every active doc has
-    vectors; anything else is a gap the operator can act on.
-    """
+    """An active document with no ``content_vectors`` row is a coverage gap."""
     db = _tiny_index(tmp_path, _empty_index_template)
     with sqlite3.connect(str(db)) as conn:
         conn.execute(
@@ -578,13 +489,7 @@ def test_integrity_summary_reports_active_docs_that_lack_vectors(
 def test_integrity_summary_reports_inactive_documents_separately(
     tmp_path: Path, _empty_index_template: Path
 ) -> None:
-    """The active-vs-total split surfaces ``active=0`` rows.
-
-    qmd's ``update`` marks documents inactive before removing them;
-    an inactive row in the live index is normal during a sync but a
-    leak if it stays past one. The summary surfaces the split so a
-    reader can see both numbers.
-    """
+    """The active-vs-total split surfaces ``active=0`` rows."""
     db = _tiny_index(tmp_path, _empty_index_template)
     with sqlite3.connect(str(db)) as conn:
         conn.execute(
@@ -636,12 +541,7 @@ def test_integrity_summary_surfaces_drift(tmp_path: Path, _empty_index_template:
 def test_live_index_snapshot_returns_none_for_missing_index(
     tmp_path: Path,
 ) -> None:
-    """A non-existent db returns ``None`` so the session guard can no-op.
-
-    The integration guard skips its assertion on ``None`` so a CI
-    sandbox without a host fixture is not blocked; the unit test pins
-    the missing-index branch separately from the populated-index branch.
-    """
+    """A non-existent db returns ``None`` so the session guard can no-op."""
     missing = tmp_path / "does-not-exist.sqlite"
     assert live_index_snapshot(missing) is None
 
@@ -649,16 +549,7 @@ def test_live_index_snapshot_returns_none_for_missing_index(
 def test_live_index_snapshot_reads_four_aggregates(
     tmp_path: Path, _empty_index_template: Path
 ) -> None:
-    """All four fields are populated, not just the two the pre-fix guard read.
-
-    The pre-fix snapshot only carried ``collection_names`` and
-    ``active_doc_count``. The four live-index orphans on 2026-10-03
-    belong to a class that the two-field snapshot could not see —
-    content_vectors writes with no backing ``content`` row — and the
-    guard therefore passed silently while the writes happened. The
-    four-field snapshot adds ``total_vectors`` and ``orphan_vectors``
-    so the guard catches that class.
-    """
+    """All four aggregates are populated, not just two."""
     db = _tiny_index(tmp_path, _empty_index_template)
     with sqlite3.connect(str(db)) as conn:
         conn.execute(
@@ -736,11 +627,7 @@ def test_snapshots_differ_returns_no_change_for_identical_snapshots(
 
 
 def test_snapshots_differ_treats_either_side_none_as_no_op() -> None:
-    """Either side ``None`` (no live index reachable) is a no-op, not a change.
-
-    The integration guard skips the assertion on this path so a CI
-    sandbox without a host fixture is not blocked.
-    """
+    """Either side ``None`` (no live index reachable) is a no-op, not a change."""
     none = None
     snap = LiveIndexSnapshot(
         collection_names=frozenset(),
@@ -759,20 +646,7 @@ def test_snapshots_differ_treats_either_side_none_as_no_op() -> None:
 def test_snapshots_differ_catches_an_orphan_vectors_increase(
     tmp_path: Path, _empty_index_template: Path
 ) -> None:
-    """The mutation test the brief asks for.
-
-    Pre-fix the guard could not detect the four live-index orphans on
-    2026-10-03 because neither ``collection_names`` nor
-    ``active_doc_count`` moved on the write. With ``orphan_vectors``
-    in the snapshot, the comparator now flags the change. The test
-    reproduces the exact write against a throwaway index and asserts
-    the comparator returns ``(True, message)`` with ``"orphan
-    vectors"`` in the diagnostic.
-
-    This is the test the pre-fix guard could not pass — a future
-    change that drops ``orphan_vectors`` from the snapshot will see
-    this fail before any live index is touched.
-    """
+    """The mutation test the brief asks for."""
     db = _tiny_index(tmp_path, _empty_index_template)
     before = live_index_snapshot(db)
 
@@ -810,14 +684,7 @@ def test_snapshots_differ_catches_an_orphan_vectors_increase(
 def test_snapshots_differ_catches_a_total_vectors_increase_with_backing_content(
     tmp_path: Path, _empty_index_template: Path
 ) -> None:
-    """``total_vectors`` catches writes that ``orphan_vectors`` cannot.
-
-    A vector whose hash *is* in ``content`` does not move
-    ``orphan_vectors`` — the orphan count stays at zero — but it does
-    move ``total_vectors``. A write of that class is also a write
-    against the live index, and the guard must catch it. The pre-fix
-    guard caught neither class.
-    """
+    """``total_vectors`` catches writes that ``orphan_vectors`` cannot."""
     db = _tiny_index(tmp_path, _empty_index_template)
     before = live_index_snapshot(db)
 
@@ -851,13 +718,7 @@ def test_snapshots_differ_catches_a_total_vectors_increase_with_backing_content(
 def test_snapshots_differ_catches_a_collection_added_to_store_collections(
     tmp_path: Path, _empty_index_template: Path
 ) -> None:
-    """``collection_names`` catches ``qmd collection add`` against the live index.
-
-    The pre-fix guard already covered this field. The test pins that
-    the four-field comparator still names the field that moved when
-    only ``store_collections`` changed, so the diagnostic is not a
-    regression that drops back to two fields silently.
-    """
+    """``collection_names`` catches ``qmd collection add`` against the live index."""
     db = _tiny_index(tmp_path, _empty_index_template)
     before = live_index_snapshot(db)
 
@@ -878,13 +739,7 @@ def test_snapshots_differ_catches_a_collection_added_to_store_collections(
 def test_snapshots_differ_catches_an_active_doc_insertion(
     tmp_path: Path, _empty_index_template: Path
 ) -> None:
-    """``active_doc_count`` catches ``qmd update`` that inserted documents.
-
-    Pin that the four-field comparator still names ``active docs``
-    when only ``documents WHERE active = 1`` moved, so a future change
-    that removes the field is caught by this test before the guard
-    goes blind to it.
-    """
+    """``active_doc_count`` catches ``qmd update`` that inserted documents."""
     db = _tiny_index(tmp_path, _empty_index_template)
     before = live_index_snapshot(db)
 

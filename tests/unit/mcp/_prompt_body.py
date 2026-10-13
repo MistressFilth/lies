@@ -1,11 +1,4 @@
-"""Helper to extract the rendered body string from a FastMCP ``Message``.
-
-The prompt test files all need to assert on the rendered body string.
-A FastMCP ``Message`` carries its text on ``message.content.text``
-(``content`` is a ``TextContent`` model). Older shapes exposed a
-top-level ``.text``; this helper handles both and falls back to
-``str(message)`` so the tests read clean either way.
-"""
+"""Helper to extract the rendered body string from a FastMCP ``Message``."""
 
 from __future__ import annotations
 

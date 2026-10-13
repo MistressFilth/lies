@@ -1,9 +1,4 @@
-"""End-to-end wizard run via subprocess + PTY. Gated on INTEGRATION=1.
-
-Skipped by default so a developer running ``make test`` does not see a
-hang. CI does NOT set INTEGRATION=1 for the default run; an opt-in
-job in the workflow sets it and runs this file only.
-"""
+"""End-to-end wizard run via subprocess + PTY."""
 
 from __future__ import annotations
 

@@ -1,11 +1,4 @@
-"""Cheap regression test: ``--skip-reindex`` is exposed in ``lies sync --help``.
-
-Lives in its own slow-disabled module because the historical
-``tests/unit/test_cli_sync_exit_code.py`` declares
-``pytestmark = pytest.mark.slow`` at module scope (the existing tests
-invoke the full Typer CLI). This test only does a ``--help``
-substring lookup, which is cheap and must run by default.
-"""
+"""Cheap regression test: ``--skip-reindex`` is exposed in ``lies sync --help``."""
 
 from __future__ import annotations
 

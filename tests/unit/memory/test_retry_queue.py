@@ -247,13 +247,7 @@ def test_format_receipt_lines_lists_deferred_reasons() -> None:
 
 
 def test_successful_drain_clears_previously_deferred_lines() -> None:
-    """A successful drain overwrites the deferred list (``[]``).
-
-    Overwrite-on-drain means: once ``format_receipt_lines`` has
-    surfaced the deferred items, the next successful drain clears
-    that bookkeeping so the receipt does not re-emit the lines on
-    subsequent turns.
-    """
+    """A successful drain overwrites the deferred list (``[]``)."""
     queue = EnrichmentQueue(max_attempts=3)
     # Item already at attempts=2; one more transient failure defers it.
     queue._items.append(  # type: ignore[attr-defined]

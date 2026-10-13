@@ -14,13 +14,7 @@ def test_register_prompts_callable() -> None:
 
 @pytest.mark.slow
 def test_register_prompts_idempotent_after_task_9() -> None:
-    """Asserts 7 names bind and the registration call is idempotent.
-
-    Slow-marked: the local FastMCP fixture's registration cost scales
-    with the number of `@mcp.prompt` bindings (~0.05s each), which
-    exceeds the 0.15s budget gate once multiple prompts register.
-    Run with `--runslow` to execute under the broader test matrix.
-    """
+    """Asserts 7 names bind and the registration call is idempotent."""
     from lies.mcp.prompts import register_prompts
 
     from tests.unit.mcp.test_server_registration import _registered_prompt_names

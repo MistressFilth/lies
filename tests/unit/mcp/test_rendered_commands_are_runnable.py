@@ -1,52 +1,4 @@
-"""Every ``Bash(...)`` a prompt renders must be a command ``lies`` accepts.
-
-Three prompt bodies shipped flags that no ``lies`` command has —
-``--data-dir``, ``--only``, ``--type``, ``--delete`` — and the two
-prompts whose job is mutating the library rendered nothing that ran.
-Nothing caught it, because
-``test_prompts_flag_vocabulary.py`` proves a flag reaches the *rendered
-body* and stops there. It cannot tell a rendered command the CLI
-accepts from one it rejects with exit 2.
-
-This module closes that gap by checking the rendered command against
-the live Typer app: every ``--flag`` in it must be an option the
-target command declares, every value-taking option must be followed
-by a token, and every required Argument must have been supplied.
-Introspection only — nothing is executed, so the test has no side
-effects on the host library.
-
-**The first version of this file closed one direction and claimed
-two.** Its matrices iterated the *hand-written* tables, so a flag the
-command declares and the table omits generated no row and went green;
-and ``_check_command`` validated flag names and an arity ceiling only,
-so it accepted ``lies library new`` — a command that exits 2 for a
-missing slug. Both were found by mutating the implementation and
-watching the suite stay green. Three tests below are the repair, and
-each one fails on a mutation that the previous version survived:
-
-``test_vocabulary_tables_match_the_live_signatures``
-    Equality, both directions, between every vocabulary table and the
-    options the live app declares. An omission is a failure; so is an
-    invention. Replaces the "one tail per table entry" idea, which
-    could only ever find inventions.
-``test_every_declared_flag_reaches_the_rendered_command``
-    A declared flag that the body knows about but never renders is a
-    silent loss, and no table-equality test can see it — the flag is
-    declared, the table is right, the *include tuple* in the body is
-    not. This renders a tail naming every option and asserts each one
-    reaches the command.
-``test_a_body_never_renders_a_command_with_a_starved_option``
-    A value-taking option with nothing after it: ``--source`` at the
-    end of a rendered line.
-
-Runtime preconditions are a fourth thing, and introspection cannot
-reach them. ``lies library new`` requires ``--source`` and ``lies
-ingest --source`` requires a collection name, both enforced by
-``raise``/``typer.Exit`` in a function body rather than by the
-signature. The tables below are exactly equal to the signatures and
-the rendered command is still invalid; the body-level regressions at
-the end of this file are what hold those two closed.
-"""
+"""Every ``Bash(...)`` a prompt renders must be a command ``lies`` accepts."""
 
 from __future__ import annotations
 
@@ -326,14 +278,7 @@ def _real_verb(verb: str) -> str:
 
 @pytest.mark.parametrize("verb", sorted(_LIBRARY_VERB_FLAGS))
 def test_vocabulary_tables_match_the_live_signatures(verb: str) -> None:
-    """The per-verb table equals the Typer signature, in both directions.
-
-    Deleting ``"force"`` from ``_LIBRARY_VERB_FLAGS["delete"]`` — a
-    flag ``lies library delete`` really declares — kept the whole
-    suite green before this test existed, because every matrix
-    iterated the table it was supposed to check. Equality against the
-    app catches it.
-    """
+    """The per-verb table equals the Typer signature, in both directions."""
     real = _real_verb(verb)
     declared_value, declared_bool = _classify(_library_commands()[real])
     table_value, table_bool = _LIBRARY_VERB_FLAGS[verb]
@@ -350,12 +295,7 @@ def test_vocabulary_tables_match_the_live_signatures(verb: str) -> None:
 
 
 def test_every_library_verb_has_a_table_entry() -> None:
-    """A new ``lies library`` verb cannot ship without a table row.
-
-    The per-verb equality test above only runs for verbs already in
-    the table, so adding a verb to the CLI and forgetting the table
-    would skip it rather than fail. This closes that direction.
-    """
+    """A new ``lies library`` verb cannot ship without a table row."""
     declared = set(_library_commands()) - {"--help", "--version"}
     # ``tag`` is a prompt spelling that renders under ``modify``; it is
     # not a `lies library` command, so it is dropped from the table side
@@ -408,15 +348,7 @@ def _tail_naming_every_option(
 
 @pytest.mark.parametrize("verb", sorted(_LIBRARY_VERB_FLAGS))
 def test_every_declared_flag_reaches_the_rendered_command(verb: str) -> None:
-    """A flag the body parses but never renders is a silent loss.
-
-    Dropping ``"prompt"`` from ``new``'s render include-tuple left the
-    vocabulary table correct and the signature equal, and every
-    pre-existing test green — ``--prompt`` is a real option that the
-    user could type and the command would then run without. The
-    include tuple is a *fourth* hand-written table, in the body, and no
-    signature-derived test could see it.
-    """
+    """A flag the body parses but never renders is a silent loss."""
     value, boolean = _LIBRARY_VERB_FLAGS[verb]
     if not value and not boolean:
         return
@@ -447,12 +379,7 @@ def test_every_declared_flag_reaches_the_rendered_command(verb: str) -> None:
 
 
 def test_a_body_never_renders_a_command_with_a_starved_option() -> None:
-    """A value-taking option with nothing after it is the exit-2 case.
-
-    ``_check_command`` walked past the end of the token list accepting
-    ``--source`` with no value; this pins the check itself against a
-    command that is genuinely unrunnable.
-    """
+    """A value-taking option with nothing after it is the exit-2 case."""
     for broken in (
         "lies library new --source",
         "lies library modify mylib --tag",
@@ -514,26 +441,14 @@ def test_ingest_renders_when_a_collection_is_named() -> None:
 
 
 def test_a_bare_double_dash_is_text_the_agent_reads() -> None:
-    """``--`` no longer separates a flag from a collection positional,
-    because the body does not render Bash per positional any more. The
-    agent reads the verbatim request and identifies collection names
-    from natural language; ``--`` is ordinary text inside the
-    ``user_request`` fence.
-    """
+    """A bare ``--`` is question text, not a flag terminator."""
     body = rendered_body(sync_prompt("-- pydantic")[0])
     assert "Run Bash(" not in body, body
     assert "pydantic" in body, body
 
 
 def test_a_single_dash_token_is_never_an_argument() -> None:
-    """``-pydantic`` is a typo, and a bare ``lies sync`` syncs everything.
-
-    Letting it fall through to a positional rendered
-    ``Bash(lies sync -pydantic)`` (exit 2). Recording it as an unknown
-    flag emptied the name list instead, which rendered the *far* worse
-    ``Bash(lies sync)`` — every collection. ``sync`` therefore refuses
-    on an unrecognized flag rather than dropping it.
-    """
+    """``-pydantic`` is a typo, and a bare ``lies sync`` syncs everything."""
     body = rendered_body(sync_prompt("-pydantic")[0])
     assert body.startswith("Cannot run sync:"), body
     assert "Run Bash(" not in body, body
@@ -555,13 +470,7 @@ def test_rendered_bash_command_matches_the_real_cli(prompt_fn: object, tail: str
 
 
 def test_the_old_invented_flags_were_real_defects() -> None:
-    """Pin the regression, so the fix cannot be undone by widening a table.
-
-    These four are the exact strings the review found. Each exited 2
-    from the real CLI. They live here as negative fixtures because
-    ``_check_command`` alone would go green if every prompt simply
-    stopped rendering a command at all.
-    """
+    """The fix cannot be undone later by widening a table."""
     root = get_command(root_app)
     for invented in ("--data-dir", "--only", "--jobs", "--scraper-timeout", "--dry-run"):
         assert invented not in _declared_options(root.commands["sync"]), (
@@ -574,12 +483,7 @@ def test_the_old_invented_flags_were_real_defects() -> None:
 
 
 def test_ground_keeps_flag_shaped_words_in_the_question() -> None:
-    """A question about an option flag grounds the option flag.
-
-    The same defect the filter parser guards against, one layer up:
-    running the full flag grammar over a question deleted its
-    ``--only`` and searched for the remainder.
-    """
+    """A question about an option flag grounds the option flag."""
     for question, expected in (
         ("what is the --only flag", "what is the --only flag"),
         ("what does --dry-run do", "what does --dry-run do"),
@@ -598,11 +502,7 @@ def test_ground_still_parses_a_leading_top_k() -> None:
 
 
 def test_ground_honours_the_double_dash_terminator() -> None:
-    """``--`` says the flags stop; the rest is text, flags and all.
-
-    ``top_k`` stays at its default, because a flag after ``--`` is the
-    user quoting a flag *in a question*, not setting one.
-    """
+    """``--`` says the flags stop; the rest is text, flags and all."""
     [msg] = ground_prompt("-- --top_k 5 what changed")
     body = rendered_body(msg)
     assert "\n--top_k 5 what changed\n```" in body, body

@@ -1,25 +1,4 @@
-"""Tests for src/lies/mcp/grounding.py — daemon-based fan-out.
-
-Pins the unscoped-query brick-wall fix: ``ArchivistDigest.no_library``
-additive field, ``_fanout_unscoped()`` single-batch daemon
-dispatcher, and the ``no_library=True`` fast-path when no library
-collections are registered. The fan-out path replaces the F18
-librarian LLM round-trip on unscoped queries (which timed out at
-~42s / returned 0 citations per session 2505630b's reproduction)
-with a single daemon ``query`` against the resolved collection set
-via ``lies.qmd.access.daemon_tool`` — the daemon's
-``collections`` parameter is a true push-down, so a hybrid search
-returns in-scope rows from every named collection.
-
-The previous shape was a per-collection subprocess fan-out with a
-consecutive-error counter and a recycle trigger; both are gone
-because the seam does its own recycle and the seam's typed errors
-(``QmdDaemonUnavailable`` / ``QmdDaemonWedged``) propagate to the
-archivist rather than being silently dropped. A new test
-(``test_ground_propagates_daemon_unavailable``) pins the
-propagation so a future regression that folds a daemon failure
-into ``no_coverage=True`` is caught.
-"""
+"""Tests for src/lies/mcp/grounding.py — daemon-based fan-out."""
 
 from __future__ import annotations
 
@@ -80,14 +59,7 @@ def test_archivist_digest_has_no_library_field_default_false() -> None:
 
 
 def test_archivist_digest_transient_defaults_false() -> None:
-    """``transient`` is additive and defaults to False.
-
-    A clean miss (``no_coverage=True``) and a transient failure
-    (``transient=True, no_coverage=False``) are distinct shapes.
-    The default-False keeps existing call sites that construct a
-    digest by keyword stable — ``ArchivistDigest(...)`` without
-    ``transient=`` still means "this was a clean run".
-    """
+    """``transient`` is additive and defaults to False."""
     from lies.mcp.grounding import ArchivistDigest
 
     digest = ArchivistDigest(
@@ -105,15 +77,7 @@ def test_archivist_digest_transient_defaults_false() -> None:
 def test_ground_fanout_dispatch_failure_surfaces_as_transient(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An unscoped fan-out dispatch failure is a process claim, not a corpus claim.
-
-    The previous shape folded any fan-out ``Exception`` into
-    ``no_coverage=True`` — the same defect the timeout branch
-    exists to remove. The fix sets ``transient=True,
-    no_coverage=False`` and logs through ``_log.error`` so a
-    persistently failing daemon does not go quiet under
-    ``warnings.warn``'s once-per-location filter.
-    """
+    """An unscoped fan-out dispatch failure is a process claim, not a corpus claim."""
     from lies.library import registry as reg_mod
     from lies.library.registry import LibraryCollectionMeta
     from lies.mcp import grounding
@@ -234,12 +198,7 @@ def test_ground_an_ordinary_dispatch_failure_still_has_no_reason(
 def test_ground_tagged_fanout_dispatch_failure_surfaces_as_transient(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A tagged fan-out dispatch failure is a process claim, not a corpus claim.
-
-    Same shape as the unscoped path. Pinned separately so the
-    tagged and untagged fast-paths cannot drift on the failure
-    envelope.
-    """
+    """A tagged fan-out dispatch failure is a process claim, not a corpus claim."""
     from lies.library import registry as reg_mod
     from lies.library.registry import LibraryCollectionMeta
     from lies.mcp import grounding
@@ -315,8 +274,7 @@ def test_ground_unscoped_uses_fanout(monkeypatch) -> None:
 
 
 def test_ground_unscoped_no_library_returns_no_library_true(monkeypatch) -> None:
-    """When no library collections are registered, ground() returns
-    no_library=True and no_coverage=True with empty citations."""
+    """When no library collections are registered, ground() returns no_library=True and no_coverage=True with empty citations."""
     from lies.mcp import grounding
     from lies.query import synthesizer as synth_mod
 
@@ -332,20 +290,7 @@ def test_ground_unscoped_no_library_returns_no_library_true(monkeypatch) -> None
 def test_fanout_unscoped_routes_through_the_daemon_seam(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``_fanout_unscoped`` issues one daemon ``query`` with the full push-down.
-
-    The previous shape was a per-collection subprocess fan-out that
-    paid a model-load cost per call. The seam now serves the
-    fan-out: one daemon ``query`` with the resolved collection
-    list passed as ``collections=`` and the resolved question as
-    ``lex`` + ``vec`` sub-queries. The push-down is exact, so no
-    post-filter is needed and one round trip replaces N.
-
-    This test pins the wire shape: the daemon tool is ``query``;
-    the collection list is the resolved one; the limit is
-    ``top_k``; the search payload is exactly ``[lex, vec]`` (no
-    ``hyde``, matching the read-side search contract).
-    """
+    """``_fanout_unscoped`` issues one daemon ``query`` with the full push-down."""
     from lies.library import registry as reg_mod
     from lies.library.registry import LibraryCollectionMeta
     from lies.mcp import grounding
@@ -425,16 +370,7 @@ def test_fanout_unscoped_routes_through_the_daemon_seam(
 
 
 def test_fanout_unscoped_drops_rows_with_no_file(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Daemon rows missing ``file`` are dropped, not converted to bad paths.
-
-    The daemon never sends a row without ``file`` today (Review
-    Focus #2 — a row that has no usable ``file`` is a wire-shape
-    defect), but a future daemon version that does would slip
-    through ``[collection]/[rest]`` parsing and produce
-    ``collection=""`` rows. The LIES-side guard is the same one
-    ``search`` ships: a missing ``file`` drops the row, so a wire
-    defect never lands in the digest as a malformed citation.
-    """
+    """Daemon rows missing ``file`` are dropped, not converted to bad paths."""
     from lies.library import registry as reg_mod
     from lies.library.registry import LibraryCollectionMeta
     from lies.mcp import grounding
@@ -462,15 +398,7 @@ def test_fanout_unscoped_drops_rows_with_no_file(monkeypatch: pytest.MonkeyPatch
 def test_fanout_unscoped_empty_daemon_result_yields_empty_excerpts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An empty ``structuredContent.results`` is mapped to ``[]``.
-
-    The daemon answers an unknown collection (or any unscoped
-    query that finds nothing) with an empty result and **no
-    error**. The fan-out is a no-op on that wire shape — the
-    caller reads the empty list as ``no_coverage=True`` through
-    the archivist's envelope, which is the honest "the corpus
-    had no in-scope hits" answer.
-    """
+    """An empty ``structuredContent.results`` is mapped to ``[]``."""
     from lies.library import registry as reg_mod
     from lies.library.registry import LibraryCollectionMeta
     from lies.mcp import grounding
@@ -491,14 +419,7 @@ def test_fanout_unscoped_empty_daemon_result_yields_empty_excerpts(
 def test_fanout_unscoped_enforces_limit_lies_side(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The LIES-side ``rows[:top_k]`` slice is defence in depth.
-
-    The daemon honours ``limit`` today; the slice is what stops a
-    future backend that ignores the wire argument from returning a
-    wider top-N than asked. Seven rows come back, the cap is five,
-    only five reach the caller. The same belt-and-braces lives in
-    ``_post_query`` for ``search``.
-    """
+    """The LIES-side ``rows[:top_k]`` slice is defence in depth."""
     from lies.library import registry as reg_mod
     from lies.library.registry import LibraryCollectionMeta
     from lies.mcp import grounding
@@ -529,22 +450,7 @@ def test_fanout_unscoped_enforces_limit_lies_side(
 
 
 def test_ground_propagates_daemon_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A down daemon is re-raised, not folded into ``no_coverage=True``.
-
-    The previous CLI path's ``except Exception`` swallowed a
-    fan-out failure into ``no_coverage=True`` — a claim about the
-    corpus, made for a process failure, exactly the class of
-    silent failure the timeout-classification branch exists to
-    remove. The seam now raises ``QmdDaemonUnavailable`` for a
-    down daemon, and ``ground()`` re-raises it so the MCP layer
-    (or the Python caller) sees the typed error and the operator
-    message names ``lies qmd up``.
-
-    The behaviour pinned here is the *digest shape* on a daemon
-    failure: the typed error is what reaches the caller, not a
-    silent ``ArchivistDigest(no_coverage=True, citations=[])``
-    that the librarian would read as "the corpus has nothing".
-    """
+    """A down daemon is re-raised, not folded into ``no_coverage=True``."""
     from lies.library import registry as reg_mod
     from lies.library.registry import LibraryCollectionMeta
     from lies.mcp import grounding
@@ -582,15 +488,7 @@ def test_ground_propagates_daemon_unavailable(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_ground_propagates_daemon_wedged(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A wedged daemon is re-raised with the seam's ``last_output`` attached.
-
-    A wedge is a process-level claim: the search never finished,
-    so the digest has no standing to assert coverage. Folding it
-    into ``no_coverage=True`` would be the same false-claim
-    class the seam's recycle path was built to prevent. The
-    archivist re-raises the typed error so a debugging reader
-    can see the daemon's last log tail.
-    """
+    """A wedged daemon is re-raised with the seam's ``last_output`` attached."""
     from lies.library import registry as reg_mod
     from lies.library.registry import LibraryCollectionMeta
     from lies.mcp import grounding
@@ -624,15 +522,7 @@ def test_ground_propagates_daemon_wedged(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_ground_tagged_path_propagates_daemon_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The tagged fast-path also re-raises ``QmdDaemonUnavailable``.
-
-    A tagged ``ground()`` against a populated library that
-    resolves to a non-empty collection set takes the tagged
-    fast-path. The same honesty rule applies: a down daemon is
-    the operator's action, not a coverage claim. The test pins
-    that the tagged path's ``except`` branches mirror the
-    unscoped path's.
-    """
+    """The tagged fast-path also re-raises ``QmdDaemonUnavailable``."""
     from lies.library import registry as reg_mod
     from lies.library.registry import LibraryCollectionMeta
     from lies.mcp import grounding
@@ -716,12 +606,7 @@ def test_ground_reports_an_unserved_collection_set_instead_of_no_coverage(
 def test_ground_reports_only_the_collections_it_actually_dispatched(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A partially-served scope reports what it sent, and what it could not.
-
-    ``searched_scope`` naming a collection that was filtered out
-    before the call tells the reader the daemon searched something it
-    did not.
-    """
+    """A partially-served scope reports what it sent, and what it could not."""
     from lies.mcp import grounding
 
     _registry_serving(monkeypatch, "alpha", "beta")
@@ -760,12 +645,7 @@ def test_ground_reports_only_the_collections_it_actually_dispatched(
 
 
 def test_an_unserved_scope_is_logged(monkeypatch: pytest.MonkeyPatch, caplog) -> None:
-    """The unserved names reach the log, not just the envelope.
-
-    ``AGENTS.md`` says ground "filters silently and logs". The
-    silence was the defect: nothing on the operator's side showed
-    why a scoped ground found nothing.
-    """
+    """The unserved names reach the log, not just the envelope."""
     import logging
 
     from lies.mcp import grounding

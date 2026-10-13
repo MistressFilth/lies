@@ -86,9 +86,7 @@ def test_normalize_quarantines_builder_unavailable(tmp_path) -> None:
 
 
 def test_normalize_routes_bespoke_through_builder(tmp_path) -> None:
-    """Bespoke docs route through ``BespokeBuilder.build`` like every other
-    registered builder; the returned docs are post-processed with Obsidian
-    frontmatter and emitted as markdown."""
+    """Bespoke docs route through ``BespokeBuilder.build`` like every other registered builder."""
     from lies.builders.bespoke import BespokeBuilder
 
     c = Collection(

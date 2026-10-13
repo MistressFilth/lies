@@ -1,14 +1,4 @@
-"""The search tool against the live qmd daemon, not against a stub.
-
-The unit suite pins the wire shape; this pins that it holds against a
-daemon doing the real ranking and reranking. Two properties only a
-live daemon can verify: the collection filter is a true push-down
-rather than the envelope post-filtering, and each hit's ``path`` is a
-``<collection>/<page>`` form and never a docid. ``docid`` is
-``documents.hash[0:6]`` resolved by ``LIKE '<prefix>%' LIMIT 1`` with
-no ``ORDER BY``; three live prefix collisions exist among 5987 active
-documents.
-"""
+"""The search tool against the live qmd daemon, not against a stub."""
 
 from __future__ import annotations
 
@@ -84,11 +74,7 @@ def _registry_from_daemon(monkeypatch: pytest.MonkeyPatch) -> frozenset[str]:
 def test_scoped_search_returns_rows_from_every_named_collection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A multi-collection query returns rows from every named collection.
-
-    A global rank with rows dropped afterwards can return rows from
-    only one named collection when all three have matches.
-    """
+    """A multi-collection query returns rows from every named collection."""
     from lies.mcp.search import search
 
     _registry_from_daemon(monkeypatch)
@@ -109,13 +95,7 @@ def test_scoped_search_returns_rows_from_every_named_collection(
 
 
 def test_hits_carry_a_path_never_a_docid(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every hit's path is a ``<collection>/<page>`` form, never a docid.
-
-    A hit keyed by docid silently returns the wrong file on
-    collision. The daemon's ``query`` tool always sends ``file``
-    as ``displayPath``; this pins that the contract holds against
-    the live corpus.
-    """
+    """Every hit's path is a ``<collection>/<page>`` form, never a docid."""
     from lies.mcp.search import search
 
     _registry_from_daemon(monkeypatch)
@@ -138,21 +118,7 @@ def test_hits_carry_a_path_never_a_docid(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_unknown_collection_is_reported_not_silently_widened(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An unknown collection name short-circuits with ``unknown_tags``.
-
-    The daemon answers an unknown collection with an empty result
-    and no error. The pre-check in ``_search_impl`` asks the
-    daemon's ``status`` tool for the real collection list and
-    surfaces an unknown name in ``unknown_tags`` instead of
-    returning empty ``hits`` (which a caller would read as
-    "the corpus has nothing" — a false claim about the corpus).
-
-    The assertion below is only meaningful if the name is rejected
-    by the *daemon* pre-check and not by the local resolver: with an
-    empty ``live_collections`` set, every name resolves to unknown
-    locally and the pre-check never runs. ``_registry_from_daemon``
-    asserts the set is non-empty, which is what separates the two.
-    """
+    """An unknown collection name short-circuits with ``unknown_tags``."""
     from lies.mcp.search import search
 
     _registry_from_daemon(monkeypatch)

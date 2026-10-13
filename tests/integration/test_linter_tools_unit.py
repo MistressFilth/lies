@@ -1,9 +1,4 @@
-"""Tests for the linter tool surface (N2).
-
-Pin the three tool closures against a fixture wiki + memory service.
-Pattern mirrors tests/unit/agents/test_librarian_subagent.py for the
-librarian's tool registration.
-"""
+"""Tests for the linter tool surface (N2)."""
 
 from __future__ import annotations
 
@@ -62,12 +57,7 @@ def test_wiki_list_pages_returns_inventory_json(agent, wiki, memory_service) -> 
 
 
 def test_wiki_list_pages_emits_page_id_round_tripping(agent, wiki, memory_service) -> None:
-    """Each inventory row carries a SHA-1 page_id that wiki_read accepts.
-
-    Pins Critical #1 from the N2 review: ``WikiMemoryService.read``
-    requires page_ids, not paths. The inventory must hand the agent
-    values that round-trip through ``_path_for_id``.
-    """
+    """Each inventory row carries a SHA-1 page_id that wiki_read accepts."""
     from lies.memory.retrieval import _page_id_for
 
     register_linter_tools(agent, wiki=wiki, memory_service=memory_service)
@@ -84,12 +74,7 @@ def test_wiki_list_pages_emits_page_id_round_tripping(agent, wiki, memory_servic
 
 
 def test_wiki_list_pages_includes_type_and_source_pkg(agent, wiki, memory_service) -> None:
-    """Inventory rows surface cluster signals beyond ``section``.
-
-    Pins Important #7: ``section`` is ``"wiki"`` for every row and
-    useless for clustering. ``type`` and ``source_pkg`` give the
-    linter a usable partition for cross-page comparison.
-    """
+    """Inventory rows surface cluster signals beyond ``section``."""
     register_linter_tools(agent, wiki=wiki, memory_service=memory_service)
     list_tool = next(t for t in agent.toolsets[0].tools.values() if t.name == "wiki_list_pages")
     rows = json.loads(list_tool.function(None))
@@ -102,12 +87,7 @@ def test_wiki_list_pages_includes_type_and_source_pkg(agent, wiki, memory_servic
 
 
 def test_wiki_list_pages_size_reflects_disk_bytes(agent, wiki, memory_service) -> None:
-    """``size_estimate_tokens`` reflects file bytes, not slug length.
-
-    Pins Important #4: pre-fix the estimate was ``len(slug) // 4``,
-    which produced wildly wrong values (a 5,000-token dense page
-    with a 21-char slug estimated at 5 tokens).
-    """
+    """``size_estimate_tokens`` reflects file bytes, not slug length."""
     # Overwrite one page with a much larger body so the estimate
     # must come from disk bytes, not slug length.
     (wiki.wiki_dir / "a.md").write_text(
@@ -127,13 +107,7 @@ def test_wiki_list_pages_size_reflects_disk_bytes(agent, wiki, memory_service) -
 
 
 def test_wiki_list_pages_filters_catalog_drift(agent, wiki, memory_service) -> None:
-    """Catalog rows whose on-disk file is deleted are excluded.
-
-    Pins Important #5: pre-fix the inventory returned every catalog
-    row; a ``lies catalog reconcile`` race could leave rows whose
-    files were deleted off-disk. Combined with Critical #1, every
-    stale row's ``wiki_read`` would raise ``WikiPageNotFound``.
-    """
+    """Catalog rows whose on-disk file is deleted are excluded."""
     register_linter_tools(agent, wiki=wiki, memory_service=memory_service)
     list_tool = next(t for t in agent.toolsets[0].tools.values() if t.name == "wiki_list_pages")
     before = {row["path"] for row in json.loads(list_tool.function(None))}
@@ -181,14 +155,7 @@ def test_wiki_read_returns_bodies_for_known_paths(agent, wiki, memory_service) -
 
 
 def test_wiki_read_reports_unknown_ids_instead_of_raising(agent, wiki, memory_service) -> None:
-    """``wiki_read`` catches ``WikiPageNotFound`` and reports unknown ids.
-
-    Pins production resilience: a hallucinated page_id (an id the
-    agent invented, an id from a stale inventory row, an id whose
-    file was deleted between the inventory and the read) must not
-    fail the whole lint dispatch. ``WikiMemoryService.read`` raises;
-    the linter's wrapper surfaces the partial result instead.
-    """
+    """``wiki_read`` catches ``WikiPageNotFound`` and reports unknown ids."""
     from lies.memory.retrieval import _page_id_for
     from lies.memory.models import WikiPageNotFound
 

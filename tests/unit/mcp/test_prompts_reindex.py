@@ -34,11 +34,7 @@ def test_reindex_prompt_with_embed_routes_embed_flag() -> None:
 
 
 def test_reindex_accepts_all_three_all_spellings() -> None:
-    """``all`` and ``all_`` are the positional spellings the pre-single-tail
-    signature used, and ``/lies-reindex all_`` is the invocation that
-    actually worked. Treating the bare positional as a no-op silently
-    downgraded a destructive full rebuild to an ordinary one and dropped
-    the confirmation warning with it."""
+    """``all`` and ``all_`` are the positional spellings the pre-single-tail signature used, and ``/lies-reindex all_`` is the invocation that actually worked."""
     from lies.mcp.prompts_impl import reindex_prompt
 
     for tail in ("all", "all_", "ALL", "--all", "All_"):
@@ -77,12 +73,7 @@ def test_reindex_names_an_unrecognized_flag() -> None:
 
 
 def test_reindex_reports_a_positional_it_dropped() -> None:
-    """The only body of seven with no surplus report, and the costliest.
-
-    ``--name`` is the only way to scope a reindex to a wiki, so
-    ``reindex pydantic`` quietly reindexed the *default* wiki and said
-    nothing about the word it discarded.
-    """
+    """A dropped positional is reported rather than silently discarded."""
     from lies.mcp.prompts_impl import reindex_prompt
 
     [msg] = reindex_prompt("--name pydantic extra")

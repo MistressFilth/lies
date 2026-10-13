@@ -165,23 +165,7 @@ def test_port_free_false_when_bound() -> None:
 
 
 def test_port_free_probe_socket_sets_so_reuseaddr() -> None:
-    """`port_free` probe sets ``SO_REUSEADDR`` so daemon-bind survives TIME_WAIT.
-
-    Regression for the post-`down`-then-`up` EADDRINUSE race:
-    after the daemon's SIGTERM, the kernel holds the daemon's
-    listen socket in TIME_WAIT for ~60s. A fresh probe (and a
-    fresh daemon bind) without ``SO_REUSEADDR`` fails with
-    EADDRINUSE during that window. ``lies mcp up`` reports "already
-    in use" until TIME_WAIT expires — every ~60s on each restart.
-
-    Direct contract assertion: intercept ``socket.setsockopt`` to
-    record calls on the probe socket and assert ``SO_REUSEADDR`` is
-    set during the ``port_free`` call. ``port_free`` closes its
-    socket on context exit, so a post-hoc ``getsockopt`` would
-    raise ``EBADF`` — instrument the option setter instead. Standard
-    daemon-socket hygiene (uvicorn / http.server / aiohttp all set
-    it on the listening socket for exactly this reason).
-    """
+    """`port_free` probe sets ``SO_REUSEADDR`` so daemon-bind survives TIME_WAIT."""
     setsockopts: list[tuple[int, int, int]] = []
     real_setsockopt = socket.socket.setsockopt
 
@@ -430,13 +414,7 @@ def _listening_port() -> Iterator[int]:
 
 
 def test_stop_escalates_to_sigkill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A child that ignores SIGTERM is killed via SIGKILL after the grace.
-
-    Pure unit test: every signal primitive and liveness probe is mocked.
-    Asserts the escalation state machine — TERM first, then KILL — and
-    the returned ``StopResult`` shape. The PID is a chosen integer (no
-    real process exists), so no subprocess is spawned.
-    """
+    """A child that ignores SIGTERM is killed via SIGKILL after the grace."""
     wiki = _wiki(tmp_path)
     pid = 31415
     signals: list[tuple[int, int]] = []

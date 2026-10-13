@@ -1,10 +1,4 @@
-"""Tests for the linter sub-agent (N2).
-
-After the N2 rewire the linter's deps envelope is a marker type and
-the system prompt carries the new dispatch instructions. These tests
-pin the marker shape + the prompt's stop-when-saturated rule so a
-regression to the pre-N2 prompt-stuffing envelope fails loudly.
-"""
+"""Tests for the linter sub-agent (N2)."""
 
 from __future__ import annotations
 
@@ -41,12 +35,7 @@ def test_linter_prompt_instructs_stop_when_saturated() -> None:
 
 
 def test_linter_prompt_routes_wiki_read_through_page_ids() -> None:
-    """Prompt instructs the linter to pass page_ids (SHA-1), not paths.
-
-    Pins Critical #1 prompt-side: pre-fix the prompt told the agent
-    to call ``wiki_read(paths)``. ``WikiMemoryService.read`` rejects
-    paths with ``WikiPageNotFound``; the linter was dead end-to-end.
-    """
+    """Prompt instructs the linter to pass page_ids (SHA-1), not paths."""
     lower = LINTER_SYSTEM_PROMPT.lower()
     assert "page_id" in lower
     # Path-only instruction is gone.
@@ -55,12 +44,7 @@ def test_linter_prompt_routes_wiki_read_through_page_ids() -> None:
 
 
 def test_linter_prompt_saturation_rule_has_observable_cue() -> None:
-    """Stop-when-saturated rule names concrete observable criteria.
-
-    Pins Important #6: pre-fix the rule was subjective ("no new
-    findings + cross-page comparison complete"), which a weak model
-    could satisfy after a single batch or never satisfy at all.
-    """
+    """Stop-when-saturated rule names concrete observable criteria."""
     assert "BOTH of these hold" in LINTER_SYSTEM_PROMPT
     assert "every cluster" in LINTER_SYSTEM_PROMPT
     assert "wiki_search" in LINTER_SYSTEM_PROMPT

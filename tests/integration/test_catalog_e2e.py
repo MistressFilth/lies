@@ -1,30 +1,4 @@
-"""End-to-end integration tests for the catalog port. Gated on INTEGRATION=1.
-
-Exercises the catalog surface end-to-end against a real
-``WikiMemoryService`` + real cross-process flock + mocked qmd:
-
-1. ``apply_plan(PageCreate)`` writes a catalog row alongside the page
-   file and the git commit lands with the new path.
-2. ``reconcile(wiki)`` removes a catalog row whose on-disk file is
-   absent (orphan), exercising the dangling-row cleanup path.
-3. ``open_catalog`` on a wiki whose ``catalog.db`` does not yet exist
-   backfills the catalog from the existing on-disk markdown files
-   (first-open migration path).
-
-qmd is mocked because the integration gating exists to keep the unit
-suite independent of a running qmd daemon; the catalog port itself
-does not depend on qmd for these flows. ``WikiMemoryService`` is
-real (real flock, real ``atomic_commit``, real per-op catalog
-upsert inside the existing snapshot+restore envelope).
-
-Run with:
-
-    INTEGRATION=1 pytest tests/integration/test_catalog_e2e.py -v
-
-Without ``INTEGRATION=1``, the module skips cleanly so the unit suite
-is not coupled to the cross-process flock or to a live git working
-tree under ``tmp_path``.
-"""
+"""End-to-end integration tests for the catalog port."""
 
 from __future__ import annotations
 
@@ -138,13 +112,7 @@ def _create_page_plan(path: str, *, title: str, body: str) -> MemoryPlan:
 
 
 def test_apply_plan_writes_catalog_row(wiki_dir: Path) -> None:
-    """``apply_plan(PageCreate)`` writes the file, commits, and upserts a catalog row.
-
-    Exercises the per-op catalog upsert path inside the existing
-    snapshot+atomic-commit envelope: the page file lands on disk, a
-    git commit records it, and ``catalog.db`` holds a row with the
-    expected slug, title, type, and source_pkg.
-    """
+    """``apply_plan(PageCreate)`` writes the file, commits, and upserts a catalog row."""
     wiki = _wiki(wiki_dir)
     service = WikiMemoryService(wiki)
     service.register_evidence({"seed:claude-code/concepts/hooks.md"})
@@ -197,32 +165,7 @@ def test_apply_plan_writes_catalog_row(wiki_dir: Path) -> None:
 def test_snapshot_restore_leaves_orphan_reconcile_cleans(
     wiki_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failed ``atomic_commit`` leaves a dangling catalog row that ``reconcile`` cleans.
-
-    Drives the snapshot/restore envelope of
-    ``WikiMemoryService.apply_plan`` end-to-end. The per-op catalog
-    upsert (``service.py`` line ~828) commits BEFORE
-    ``atomic_commit`` (line ~667); when the commit raises
-    :class:`WikiCommitFailed` the on-disk page file is rolled back to
-    its pre-apply state via ``_restore_working_tree``, but the catalog
-    row the per-op upsert already wrote remains — orphaned against the
-    now-empty file. ``reconcile(wiki, dry_run=False)`` then cleans the
-    dangling row in a follow-up call.
-
-    The failure is forced by monkey-patching ``atomic_commit`` (the
-    post-file-write commit step) to raise ``WikiCommitFailed``. A
-    ``WikiWriteConflict`` (hash mismatch on ``PageUpdate``) would be
-    rejected earlier at ``validate_plan`` and the catalog row would
-    never be written — that path can't exercise the snapshot/restore
-    envelope, so it is not the failure we want here.
-
-    The wiki's ``.gitignore`` must list ``.lies/`` (and by extension
-    ``catalog.db``) so ``git stash push --include-untracked``
-    (snapshot) and ``git clean -fd`` (restore) leave the catalog file
-    alone. Without that ignore, the snapshot+restore envelope would
-    hide the orphan by removing the new ``catalog.db`` alongside the
-    rolled-back page file, defeating the test.
-    """
+    """A failed ``atomic_commit`` leaves a dangling catalog row that ``reconcile`` cleans."""
     # Seed a .gitignore so catalog.db is excluded from snapshot+restore.
     # The bootstrap (``lies init``) writes the same line; replicating it
     # here keeps the test self-contained and explicit about why the
@@ -292,15 +235,7 @@ def test_snapshot_restore_leaves_orphan_reconcile_cleans(
 
 
 def test_first_open_backfills_existing_files(wiki_dir: Path) -> None:
-    """``open_catalog`` on a wiki with no ``catalog.db`` backfills from disk.
-
-    The backfill walks ``wiki.wiki_dir``, computes a slug per
-    ``.md`` file (excluding system files), and seeds the ``pages``
-    table. This is the migration path for a wiki that had pages
-    written before the catalog existed; without it the first
-    ``list_pages`` call after the port would return an empty result
-    set even though ``wiki.wiki_dir`` already had content.
-    """
+    """``open_catalog`` on a wiki with no ``catalog.db`` backfills from disk."""
     # Pre-write a page BEFORE opening the catalog. Mimics a wiki
     # whose markdown pre-dates the catalog port.
     page_dir = wiki_dir / "wiki" / "claude-code"

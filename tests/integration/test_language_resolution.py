@@ -1,9 +1,4 @@
-"""Integration tests for the language resolution chain.
-
-Gated on ``INTEGRATION=1``. No network required.
-
-Run: ``INTEGRATION=1 uv run pytest tests/integration/test_language_resolution.py -v``
-"""
+"""Integration tests for the language resolution chain."""
 
 from __future__ import annotations
 

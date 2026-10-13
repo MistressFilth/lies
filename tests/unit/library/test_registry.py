@@ -99,14 +99,7 @@ def _clear_collection_caches():
 def test_collection_names_picks_up_new_directory_after_mtime_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Long-running daemon scenario: a collection is added after the
-    registry cache was populated. The cache must self-invalidate via
-    the directory mtime key — without a daemon restart.
-
-    Reproduces the live failure where the MCP daemon (started before
-    the ``switchyard`` collection existed) returned a 13-collection
-    snapshot instead of the actual 14 on disk.
-    """
+    """Long-running daemon scenario: a collection is added after the registry cache was populated."""
     lib = Library(
         collections_root=tmp_path / "collections",
         catalog_path=tmp_path / ".lies" / "catalog.db",
@@ -135,13 +128,7 @@ def test_collection_names_picks_up_new_directory_after_mtime_change(
 def test_collection_tags_picks_up_new_collection_after_mtime_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Tag-union cache self-invalidates the same way the name cache does.
-
-    The union of ``tags`` across every collection's ``config.yaml`` is
-    a separate cache (different value, different invalidation key),
-    so adding a collection must refresh the tag snapshot too. The
-    F15 validator depends on both.
-    """
+    """Tag-union cache self-invalidates the same way the name cache does."""
     lib = Library(
         collections_root=tmp_path / "collections",
         catalog_path=tmp_path / ".lies" / "catalog.db",
@@ -166,12 +153,7 @@ def test_collection_tags_picks_up_new_collection_after_mtime_change(
 def test_collection_names_cache_hits_on_unchanged_mtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Unchanged mtime = cache hit, no re-walk.
-
-    The cache exists to avoid re-walking the directory on every
-    F15-validator call (hot path). Pin the mtime, call twice, and
-    verify the inner cache holds the same entry.
-    """
+    """Unchanged mtime = cache hit, no re-walk."""
     lib = Library(
         collections_root=tmp_path / "collections",
         catalog_path=tmp_path / ".lies" / "catalog.db",

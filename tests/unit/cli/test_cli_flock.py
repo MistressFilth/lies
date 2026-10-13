@@ -124,13 +124,7 @@ def test_lies_flock_status_returns_2_when_no_flock(
 def test_lies_flock_status_returns_1_when_stale(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A held flock with a stale heartbeat exits 1 (caller can act on it).
-
-    Mirrors ``test_lies_flock_status_reports_held`` but seeds
-    ``started_at`` 10h ago so the heartbeat falls outside the
-    ``MAX_FLOCK_AGE_S`` window — ``flock_status`` reports
-    ``status: stale`` and exits 1, not 0.
-    """
+    """A held flock with a stale heartbeat exits 1 (caller can act on it)."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
@@ -235,13 +229,7 @@ def test_lies_flock_force_repair_unrepairable(
 def test_flock_force_repair_unrepairable_message_cites_captured_pid(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Pins the spec-mandated capture-before-reap behavior of
-    ``lies flock <name> force-repair``: the operator-actionable message
-    cites the captured pid + start time even when the post-reap retry
-    still loses. Sibling tests use ``pid=999999`` as the "reliably dead"
-    sentinel; capture-before-reap reads pid_file contents verbatim, so
-    pid liveness is irrelevant to message construction.
-    """
+    """S the spec-mandated capture-before-reap behavior of ``lies flock <name> force-repair``: the operator-actionable message cites the captured pid + start time."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
@@ -285,14 +273,7 @@ def test_flock_force_repair_unrepairable_message_cites_captured_pid(
 def test_flock_status_reports_indeterminate_contender(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """`lies flock <name> status` surfaces indeterminate classification.
-
-    When the heartbeat is fresh but ``pid_alive`` cannot determine the
-    contender's state (EPERM on ``os.kill``), the status command must
-    emit ``status: indeterminate`` so operators know the flock is held
-    but the holder's liveness is unknown. Exit code stays 0 because the
-    flock is effectively held — no reap is warranted.
-    """
+    """`lies flock <name> status` surfaces indeterminate classification."""
     from datetime import UTC, datetime
 
     from lies import xdg

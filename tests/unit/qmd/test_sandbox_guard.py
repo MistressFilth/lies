@@ -1,32 +1,4 @@
-"""A sandboxed library must not be able to write the live qmd index.
-
-``qmd`` resolves its index from ``$XDG_CACHE_HOME``, not from
-``$XDG_DATA_HOME``, and it is a single file keyed by collection name
-that every process on the machine shares. Redirecting the *library*
-root into a temp directory therefore sandboxes the mirror files and
-nothing else: the collection rows still land in
-``~/.cache/qmd/index.sqlite``.
-
-Measured, not inferred::
-
-    $ XDG_DATA_HOME=/tmp/sandbox-data qmd --help | grep ^Index:
-    Index: /home/divinefilth/.cache/qmd/index.sqlite
-
-    $ XDG_DATA_HOME=/tmp/sandbox-data XDG_CACHE_HOME=/tmp/sandbox-cache qmd --help | grep ^Index:
-    Index: /tmp/sandbox-cache/qmd/index.sqlite
-
-``AGENTS.local.md`` says to run ingest work "against a sandboxed XDG
-root, never against this library", which reads as sufficient and is
-not: it sandboxes ``XDG_DATA_HOME`` and leaves the index live. The
-cost was measured too -- a sandboxed batch ingest registered its
-collections in the operator's live index, and the cleanup afterwards
-was manual.
-
-The fix is not better advice, it is a refusal. Redirecting the data
-root while leaving the cache root at its default is a combination no
-caller wants: the library is throwaway and the index is not. So the
-qmd write helpers refuse it and name both variables.
-"""
+"""A sandboxed library must not be able to write the live qmd index."""
 
 from __future__ import annotations
 
@@ -66,13 +38,7 @@ def _env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, data: str | None, c
 def test_a_sandboxed_library_cannot_write_the_live_index(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The exact combination that leaked: data redirected, cache not.
-
-    Both halves matter and neither alone is the bug. Redirecting the
-    cache without the data is harmless -- the index is isolated and
-    nothing is shared. Redirecting the data without the cache is the
-    leak: throwaway mirror files, shared index rows.
-    """
+    """The exact combination that leaked: data redirected, cache not."""
     _env(monkeypatch, tmp_path, data=str(tmp_path / "data"), cache=None)
 
     with pytest.raises(cli.QmdIndexIsolationError) as excinfo:
@@ -105,12 +71,7 @@ def test_neither_root_redirected_is_allowed(
 
 
 def test_a_cache_redirect_alone_is_allowed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Redirecting only the cache isolates the index; the library is real.
-
-    Not symmetric with the dangerous case, and deliberately so: this
-    one shares nothing, so refusing it would break a legitimate way of
-    running a second index against the real library.
-    """
+    """Redirecting only the cache isolates the index; the library is real."""
     _env(monkeypatch, tmp_path, data=None, cache=str(tmp_path / "cache"))
 
     cli._assert_qmd_index_isolated()  # must not raise
@@ -119,12 +80,7 @@ def test_a_cache_redirect_alone_is_allowed(monkeypatch: pytest.MonkeyPatch, tmp_
 def test_the_lies_override_counts_as_redirected(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """``LIES_XDG_*`` is read first, so it must be read by the guard too.
-
-    A guard that only inspected ``XDG_*`` would pass a caller who
-    sandboxed through the LIES-prefixed variable -- which is the
-    spelling this repository documents.
-    """
+    """``LIES_XDG_*`` is read first, so it must be read by the guard too."""
     _env(monkeypatch, tmp_path, data=None, cache=None)
     monkeypatch.setenv("LIES_XDG_DATA_HOME", str(tmp_path / "data"))
 
@@ -138,11 +94,7 @@ def test_the_lies_override_counts_as_redirected(
 def test_the_write_helpers_refuse_before_spawning_qmd(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The guard runs before the subprocess, so nothing is written.
-
-    Checking after would be worthless: the point is that the row is
-    never created.
-    """
+    """The guard runs before the subprocess, so nothing is written."""
     _env(monkeypatch, tmp_path, data=str(tmp_path / "data"), cache=None)
     spawned: list[list[str]] = []
     monkeypatch.setattr(
@@ -159,13 +111,7 @@ def test_the_write_helpers_refuse_before_spawning_qmd(
 def test_the_spawn_recorder_actually_observes_a_permitted_call(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The recorder works.
-
-    ``qmd_run_qmd`` is a module global in ``cli``, so patching it on
-    ``_subprocess`` silently records nothing. Without this the refusal
-    test above passes vacuously -- the subprocess would never have run
-    for an unrelated reason, and the assertion would be about nothing.
-    """
+    """The recorder observes a permitted call, so a clean result means something."""
     _env(monkeypatch, tmp_path, data=None, cache=None)
     calls: list[list[str]] = []
 
@@ -180,12 +126,7 @@ def test_the_spawn_recorder_actually_observes_a_permitted_call(
 
 
 def test_reads_are_not_guarded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A sandboxed library may still *read* the live index.
-
-    The daemon is machine-global and serves the live index to every
-    client on the machine; guarding reads would break the read path
-    for the only configuration that is actually safe.
-    """
+    """A sandboxed library may still *read* the live index."""
     _env(monkeypatch, tmp_path, data=str(tmp_path / "data"), cache=None)
     calls: list[list[str]] = []
 

@@ -1,22 +1,4 @@
-"""Tests for the ``lies providers`` sub-app and first-run hint.
-
-These cover two surfaces:
-
-- ``providers_app``: the six sub-commands registered for the wizard
-  (``init``) and companion operators (``add`` / ``set-default`` /
-  ``assign`` / ``unassign`` / ``check``). Each is exercised through
-  ``CliRunner`` against the in-process Typer app so the actual
-  parameter parsing, exit-code mapping, and error-path branches are
-  covered. The companion commands construct a ``Wiki`` manually rather
-  than going through ``resolve_wiki`` / ``Wiki.require``: providers.toml
-  is user-level, not per-wiki, so a bootstrap flow cannot depend on a
-  specific wiki already being initialized.
-
-- The first-run hint: emitted to stderr by ``config_cmd``, ``init``,
-  and ``mcp up`` when the providers.toml is absent and stdout is a TTY.
-  Tests manipulate the click stream's ``isatty`` so the gate is
-  exercised without depending on a real TTY.
-"""
+"""Tests for the ``lies providers`` sub-app and first-run hint."""
 
 from __future__ import annotations
 
@@ -66,12 +48,7 @@ def _combined(result) -> str:
 
 
 def test_providers_init_refuses_existing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``lies providers init`` exits 2 when providers.toml already exists.
-
-    The file lives at ``$XDG_CONFIG_HOME/lies/providers.toml``; we point
-    ``XDG_CONFIG_HOME`` at ``tmp_path`` so the resolver lands where the
-    test planted the seed file.
-    """
+    """``lies providers init`` exits 2 when providers.toml already exists."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     _seed(tmp_path)
     result = runner.invoke(app, ["providers", "init", "--name", "default"])
@@ -103,12 +80,7 @@ def test_providers_add_happy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_providers_unassign_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``lies providers unassign`` exits 2 with a hint when providers.toml is absent.
-
-    Locks in the F2 fix: the wrapper now catches ``ProvidersConfigMissing``
-    and emits the same bootstrap hint the sibling commands do, instead of
-    bubbling a stack trace from the missing file.
-    """
+    """``lies providers unassign`` exits 2 with a hint when providers.toml is absent."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     # Intentionally do NOT seed providers.toml — the bug surfaced when
     # the file was absent and the bare call leaked a stack trace.
@@ -121,12 +93,7 @@ def test_providers_unassign_missing_file(tmp_path: Path, monkeypatch: pytest.Mon
 
 
 def test_providers_check_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``lies providers check`` exits 2 with a hint when providers.toml is absent.
-
-    Locks in the F3 fix: defensive ``try``/``except`` parity with the
-    sibling write commands so a missing file prints the bootstrap hint
-    instead of bubbling a stack trace.
-    """
+    """``lies providers check`` exits 2 with a hint when providers.toml is absent."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     result = runner.invoke(app, ["providers", "check", "--name", "default"])
     assert result.exit_code == 2
@@ -136,12 +103,7 @@ def test_providers_check_missing_file(tmp_path: Path, monkeypatch: pytest.Monkey
 def test_providers_set_default_missing_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``lies providers set-default`` exits 2 with a hint when providers.toml is absent.
-
-    Belt-and-braces coverage for the pre-existing ``ProvidersConfigMissing``
-    handler on ``set-default`` — confirms the sibling pattern F2/F3 were
-    aligned to.
-    """
+    """``lies providers set-default`` exits 2 with a hint when providers.toml is absent."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     result = runner.invoke(
         app,
@@ -158,11 +120,7 @@ def test_providers_set_default_missing_file(
 
 
 def test_providers_assign_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``lies providers assign`` exits 2 with a hint when providers.toml is absent.
-
-    Belt-and-braces coverage for the pre-existing ``ProvidersConfigMissing``
-    handler on ``assign``.
-    """
+    """``lies providers assign`` exits 2 with a hint when providers.toml is absent."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     result = runner.invoke(
         app,
@@ -192,11 +150,7 @@ def _force_stdout_isatty(monkeypatch: pytest.MonkeyPatch, value: bool) -> None:
 
 
 def test_first_run_hint_in_config_cmd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``lies config`` emits the missing-providers hint when stdout is a TTY.
-
-    The hint names the bootstrap sub-command so the operator can recover
-    without reading the README.
-    """
+    """``lies config`` emits the missing-providers hint when stdout is a TTY."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     _force_stdout_isatty(monkeypatch, True)
     # ``config`` resolves the wiki through ``Wiki.require``; mkdir the

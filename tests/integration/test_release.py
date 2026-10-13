@@ -1,18 +1,4 @@
-"""The CHANGELOG's release headers are a contract, not a formatting habit.
-
-Three separate releases shipped as `## [0.43.0]` in one file, two
-other released versions had no section at all, `Unreleased` sat
-below two released sections, and `0.45.1` sat above `0.46.0`. Every
-one of those is invisible to a reader skimming for their own
-version, and none of them is caught by anything else in the repo.
-
-The three duplicate headers were not duplicates: they were two
-stray `## [Unreleased]` blocks, stranded mid-document by earlier
-edits, that a later pass relabelled `0.43.0` rather than filing
-under the release their content actually shipped in. So the two
-properties checked here are the ones that would have caught it --
-one header per version, and descending order.
-"""
+"""The CHANGELOG's release headers are a contract, not a formatting habit."""
 
 from __future__ import annotations
 
@@ -38,12 +24,7 @@ def _sort_key(version: str) -> tuple[int, ...]:
 
 
 def test_every_release_version_appears_exactly_once() -> None:
-    """No two sections share a version.
-
-    Three `## [0.43.0]` headers is what a relabelled stray
-    `## [Unreleased]` looks like, and it is the failure this file
-    existed to allow.
-    """
+    """No two sections share a version."""
     text = Path("CHANGELOG.md").read_text(encoding="utf-8")
     versions = [v for v, _ in _sections(text) if v != "Unreleased"]
 
@@ -52,11 +33,7 @@ def test_every_release_version_appears_exactly_once() -> None:
 
 
 def test_releases_are_in_descending_version_order() -> None:
-    """Newest first, so the top of the file is the newest release.
-
-    ``Unreleased`` is the staging area and belongs at the very top,
-    above every dated section.
-    """
+    """Newest first, so the top of the file is the newest release."""
     text = Path("CHANGELOG.md").read_text(encoding="utf-8")
     sections = _sections(text)
 
@@ -74,24 +51,14 @@ def test_releases_are_in_descending_version_order() -> None:
 
 @pytest.mark.parametrize("version", ["0.38.0", "0.43.2", "0.45.0"])
 def test_the_versions_the_branch_shipped_have_sections(version: str) -> None:
-    """A version set in `pyproject.toml` gets a CHANGELOG section.
-
-    Three releases on this branch set a version and wrote no section
-    for it, so a reader upgrading through them sees nothing. Named
-    explicitly rather than derived: deriving it would need the git
-    history the test exists to stand in for.
-    """
+    """A version set in `pyproject.toml` gets a CHANGELOG section."""
     text = Path("CHANGELOG.md").read_text(encoding="utf-8")
     versions = [v for v, _ in _sections(text)]
     assert version in versions, f"{version} shipped without a CHANGELOG section"
 
 
 def test_the_declared_version_has_a_section() -> None:
-    """`pyproject.toml`'s version appears in the CHANGELOG.
-
-    The two drift independently -- a version bump is one file and a
-    changelog entry is another, and nothing connected them.
-    """
+    """`pyproject.toml`'s version appears in the CHANGELOG."""
     text = Path("CHANGELOG.md").read_text(encoding="utf-8")
     pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
     current = re.search(r'^version = "([^"]+)"', pyproject, re.M)

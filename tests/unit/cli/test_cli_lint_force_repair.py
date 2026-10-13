@@ -92,12 +92,7 @@ def _capture_production_unrepairable_message(monkeypatch: pytest.MonkeyPatch, wi
 def test_lint_fix_default_propagates_lock_busy(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """No ``--force-repair`` flag → existing ``WikiLockBusy`` message; exit 1.
-
-    Patches ``Orchestrator`` so the test never needs a real model /
-    API key; the CLI handler must surface the message to stderr and
-    exit non-zero.
-    """
+    """No ``--force-repair`` flag → existing ``WikiLockBusy`` message; exit 1."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
@@ -125,21 +120,7 @@ def test_lint_fix_default_propagates_lock_busy(
 def test_lint_fix_force_repair_propagates_unrepairable(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Real-path test for the CLI's ``--force-repair`` propagation.
-
-    Drives the production-raised ``WikiFlockUnrepairable`` message
-    constructed by ``_acquire_wiki_flock`` (Task 2) through the CLI
-    handler. The CLI catches the flock error and prints the
-    operator-actionable message to stderr.
-
-    Per the M1 spec's "Risks + mitigations" section, the
-    ``WikiFlockUnrepairable`` from ``_acquire_wiki_flock`` deliberately
-    omits pid (the file is unlinked before the retry); the
-    spec-mandated substring is ``lies flock mywiki force-repair``.
-    ``flock_force_repair`` is the code path that *does* surface pid;
-    the new flock test in ``tests/unit/cli/test_cli_flock.py`` pins
-    that behavior.
-    """
+    """Real-path test for the CLI's ``--force-repair`` propagation."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
@@ -177,22 +158,7 @@ def test_lint_fix_force_repair_propagates_unrepairable(
 def test_lint_fix_force_repair_unrepairable_reraised_through_apply(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """``WikiFlockUnrepairable`` from the service reaches the CLI handlers.
-
-    The MagicMock-based tests above bypass the orchestrator's broad
-    ``except Exception`` in ``_apply_repair_plan``. After the fix,
-    that handler re-raises ``WikiFlockUnrepairable`` / ``WikiLockBusy``
-    before the broad except, so they reach the CLI's top-level
-    ``typer.Exit(code=1)`` handlers. This test drives the real
-    ``Orchestrator._apply_repair_plan`` path: a real ``Orchestrator``
-    instance built via ``__new__`` (so we skip ``__init__``'s model
-    loading) with a mocked memory service that raises the flock
-    error. The re-raise is exercised end-to-end and the assertions
-    below confirm ``WikiFlockUnrepairable`` and ``WikiLockBusy``
-    propagate through ``pytest.raises`` (no CLI invocation here; the
-    CLI-side assertions live in
-    ``test_lint_fix_force_repair_propagates_unrepairable`` above).
-    """
+    """``WikiFlockUnrepairable`` from the service reaches the CLI handlers."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))

@@ -27,11 +27,7 @@ def test_run_qmd_returns_completed_process_on_success(tmp_path: Path):
 
 @pytest.mark.slow
 def test_run_qmd_kills_child_on_timeout(tmp_path: Path):
-    """A subprocess that ignores SIGTERM gets SIGKILL'd on timeout.
-
-    Marked slow: waits the full ``timeout`` (1.0s) for the SIGKILL
-    path to fire, well over the 0.15s hard-limit gate.
-    """
+    """A subprocess that ignores SIGTERM gets SIGKILL'd on timeout."""
     import signal
 
     script = tmp_path / "zombie.py"
@@ -49,12 +45,7 @@ def test_run_qmd_kills_child_on_timeout(tmp_path: Path):
 
 
 def test_run_qmd_does_not_deadlock_on_long_stderr(tmp_path: Path):
-    """A subprocess writing 100 KB to stderr must not hang the parent.
-
-    Popen + bounded communicate(timeout=...) drains pipes
-    concurrently; the previous ``capture_output=True`` would block
-    on the 64 KB OS pipe buffer.
-    """
+    """A subprocess writing 100 KB to stderr must not hang the parent."""
     script = tmp_path / "loud.py"
     script.write_text(
         "import sys\n"
@@ -76,14 +67,7 @@ def test_run_qmd_does_not_deadlock_on_long_stderr(tmp_path: Path):
 
 @pytest.mark.slow
 def test_run_qmd_kills_process_group_on_timeout(tmp_path: Path):
-    """Timeout SIGKILLs the entire process group, not just the immediate child.
-
-    Pins the ``start_new_session=True`` + ``os.killpg`` contract:
-    a forked grandchild that ignores SIGTERM and outlasts the
-    timeout must be reaped along with its parent. qmd is a bun
-    shim that forks node.js; ``proc.kill()`` alone would leave
-    the grandchild orphaned.
-    """
+    """Timeout SIGKILLs the entire process group, not just the immediate child."""
     script = tmp_path / "spawn_grandchild.py"
     script.write_text(
         "import os, signal, time\n"
@@ -114,13 +98,7 @@ def test_run_qmd_kills_process_group_on_timeout(tmp_path: Path):
 
 @pytest.mark.slow
 def test_run_qmd_long_stderr_kills_grandchild(tmp_path: Path):
-    """Long-stderr path also kills the entire process group on timeout.
-
-    Combines both failure modes (100 KB stderr write + forked
-    grandchild that ignores SIGTERM): child blocks writing stderr,
-    parent hits the timeout, SIGKILL must reach the whole group
-    so the grandchild does not outlive the parent.
-    """
+    """Long-stderr path also kills the entire process group on timeout."""
     script = tmp_path / "loud_grandchild.py"
     script.write_text(
         "import os, signal, sys, time\n"
@@ -162,11 +140,7 @@ def test_run_qmd_long_stderr_kills_grandchild(tmp_path: Path):
 
 
 def test_child_env_forces_no_color(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``NO_COLOR`` is set on every qmd child.
-
-    Defence in depth, not a live fix: under a pipe qmd's colour is
-    already off.
-    """
+    """``NO_COLOR`` is set on every qmd child."""
     from lies.qmd._subprocess import _child_env
 
     monkeypatch.delenv("NO_COLOR", raising=False)
@@ -176,12 +150,7 @@ def test_child_env_forces_no_color(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_child_env_overrides_an_operator_who_re_enabled_color(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An exported ``NO_COLOR=0`` must not reach a stream LIES parses.
-
-    The subprocess inherits the operator's shell environment;
-    someone who re-enabled colour in their own terminal would
-    otherwise change what ``qmd_query`` parses.
-    """
+    """An exported ``NO_COLOR=0`` must not reach a stream LIES parses."""
     from lies.qmd._subprocess import _child_env
 
     monkeypatch.setenv("NO_COLOR", "0")
@@ -191,11 +160,7 @@ def test_child_env_overrides_an_operator_who_re_enabled_color(
 def test_child_env_inherits_the_rest_of_the_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Only ``NO_COLOR`` is overridden; nothing else is dropped.
-
-    qmd needs the inherited environment for its cache roots,
-    index override, embedding parallelism, and credentials.
-    """
+    """Only ``NO_COLOR`` is overridden; nothing else is dropped."""
     from lies.qmd._subprocess import _child_env
 
     monkeypatch.setenv("QMD_INDEX", "/tmp/some-index.sqlite")
@@ -206,11 +171,7 @@ def test_child_env_inherits_the_rest_of_the_environment(
 
 
 def test_run_qmd_passes_the_child_env_to_the_process(tmp_path: Path) -> None:
-    """The override is actually applied, not merely computed.
-
-    Runs a real child through ``_run_qmd`` and reads back what it
-    received.
-    """
+    """The override is actually applied, not merely computed."""
     import sys
 
     script = tmp_path / "show_env.py"
@@ -225,14 +186,7 @@ def test_run_qmd_passes_the_child_env_to_the_process(tmp_path: Path) -> None:
 
 @pytest.mark.slow
 def test_idle_bound_fires_before_the_total_bound(tmp_path: Path) -> None:
-    """A silent child is reported ``idle`` with its output tail — not ``total``.
-
-    The reader loop checks the total bound first, so an idle bound
-    at or above the total is dead code: every kill would report
-    ``bound="total"`` and drop ``last_output``. A child that says
-    nothing at all, under an idle bound well below its total, must
-    come back as an idle wedge carrying whatever it had emitted.
-    """
+    """A silent child is reported ``idle`` with its output tail — not ``total``."""
     script = tmp_path / "silent.py"
     script.write_text(
         "import sys, time\nsys.stderr.write('phase 1\\n'); sys.stderr.flush()\ntime.sleep(60)\n"
@@ -265,16 +219,7 @@ def test_silent_command_idle_bound_stays_below_the_total() -> None:
 
 
 def test_a_wedge_stderr_is_capped_like_the_success_path(tmp_path: Path):
-    """Both wedge raises carry the same ``_MAX_STDERR_BYTES`` buffer.
-
-    ``search._decode`` documents that ``_run_qmd`` truncates stderr
-    before it reaches the caller, and renders ``QmdTimeoutError``'s
-    copy into the user-visible ``fallback_reason``. That was true on
-    the success path only: both wedge raises passed the whole buffer
-    through, so a long Node stack trace -- the ~30 KB case the cap
-    exists for -- landed verbatim in the MCP envelope precisely when
-    something had gone wrong.
-    """
+    """Both wedge raises carry the same ``_MAX_STDERR_BYTES`` buffer."""
     from lies.qmd._subprocess import _MAX_STDERR_BYTES
 
     script = tmp_path / "loud_then_hang.py"

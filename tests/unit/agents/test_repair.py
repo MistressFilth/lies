@@ -55,10 +55,7 @@ def test_repair_agent_imports_cleanly() -> None:
 
 
 def test_repair_agent_prompts_safe_to_fix_respected() -> None:
-    """Even if the user prompt names a safe_to_fix=False finding, the system
-    prompt forbids emitting an op for it. The TestModel returns a structured
-    plan from the prompt's instructions; verify the prompt instructs the
-    agent to refuse."""
+    """Even if the user prompt names a safe_to_fix=False finding, the system prompt forbids emitting an op for it."""
     from lies.agents.repair import REPAIR_AGENT_SYSTEM_PROMPT
 
     assert "safe_to_fix" in REPAIR_AGENT_SYSTEM_PROMPT

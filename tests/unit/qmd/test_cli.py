@@ -1,13 +1,4 @@
-"""Tests for ``qmd_query`` in :mod:`lies.qmd.cli`.
-
-The previous ``subprocess.run(capture_output=True, text=True, ...)``
-shape was deadlock-prone on long stderr writes. The new
-``_run_qmd`` helper in :mod:`lies.qmd._subprocess` replaces that
-with Popen + ``communicate(timeout=...)`` and a DEVNULL stdin,
-plus an 8 KB stderr truncation cap. The first test exercises the
-integration so a future regression in ``qmd_query``'s subprocess
-plumbing is caught at the call site.
-"""
+"""Tests for ``qmd_query`` in :mod:`lies.qmd.cli`."""
 
 from __future__ import annotations
 
@@ -25,20 +16,7 @@ from lies.qmd.cli import QmdError, qmd_query
 def test_qmd_query_does_not_deadlock_on_long_stderr(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """qmd_query must not deadlock when qmd emits a long stderr trace.
-
-    Mocks the qmd binary so we can spawn a Python script that
-    emits 100 KB to stderr then sleeps. The new ``_run_qmd`` path
-    uses Popen + ``communicate(timeout=...)`` which drains both
-    pipes concurrently and bounds stderr to 8 KB; the test
-    asserts the call returns within 3 s.
-
-    Regression guard only. ``subprocess.run(capture_output=...)``
-    in modern Python (3.6+) uses threads to drain pipes and does
-    not deadlock on a 100 KB stderr write either, so this passes
-    against the old path; its value is catching a future change
-    in ``qmd_query`` that drops the drain.
-    """
+    """Qmd_query must not deadlock when qmd emits a long stderr trace."""
     fake_qmd = tmp_path / "qmd"
     fake_qmd.write_text(
         "#!/bin/sh\n"
@@ -74,12 +52,7 @@ def test_parse_json_list_accepts_a_clean_payload() -> None:
 
 
 def test_parse_json_list_tolerates_a_download_progress_prefix() -> None:
-    """The real qmd shape: ipull's spinner, then the JSON.
-
-    qmd's only stdout noise is ``ipull``'s progress while the model
-    cache is cold (it writes through ``stdout-update`` with no TTY
-    guard; LIES always pipes).
-    """
+    """The real qmd shape: ipull's spinner, then the JSON."""
     from lies.qmd.cli import _parse_json_list
 
     prefix = (
@@ -136,17 +109,7 @@ def test_parse_json_list_does_not_requalify_the_whole_stream_per_bracket() -> No
 
 
 def test_qmd_query_enforces_the_envelope_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``qmd_query(limit=N)`` returns at most N rows, even if the CLI ignores ``--limit``.
-
-    The qmd CLI's option table at ``dist/cli/qmd.js:2550`` reads
-    only ``values.n`` (the long option ``--limit`` is not parsed),
-    and the call at ``:2428`` passes ``limit: results.length``,
-    overriding the value outright. The LIES-side slice at the
-    bottom of ``qmd_query`` is the load-bearing half; the daemon
-    path forwards ``limit`` to a backend that honours it, but
-    the CLI path does not, and the slice is duplicated on every
-    path because every caller depends on it.
-    """
+    """``qmd_query(limit=N)`` returns at most N rows, even if the CLI ignores ``--limit``."""
     import json
     from types import SimpleNamespace
 
@@ -173,15 +136,7 @@ def test_qmd_query_enforces_the_envelope_limit(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_a_scoped_query_filters_before_it_slices(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A collection filter must narrow the result set *before* the top-N slice.
-
-    With every in-scope row ranked below the slice, ``filtered``
-    comes back empty and ``qmd_query`` raises
-    ``QmdNoResultsError`` — a claim that the corpus has no hits,
-    for a query whose hits are sitting at rank 6. The librarian
-    contract tells the model that flag means the corpus is empty
-    for this question.
-    """
+    """A collection filter must narrow the result set *before* the top-N slice."""
     import json
     from types import SimpleNamespace
 
@@ -248,13 +203,7 @@ def test_a_scoped_query_still_honours_the_limit(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_the_timeout_type_is_reachable_from_the_package() -> None:
-    """``from lies.qmd import QmdTimeoutError`` works.
-
-    The type introduced in 0.43.0 as *the* way to distinguish a slow
-    daemon from a broken one was absent from the package's imports and
-    ``__all__``, so a caller asking "slow or broken" could not name
-    the distinction without reaching into ``lies.qmd.cli``.
-    """
+    """``from lies.qmd import QmdTimeoutError`` works."""
     import lies.qmd as pkg
     from lies.qmd import QmdCommandError, QmdTimeoutError
 
@@ -265,15 +214,7 @@ def test_the_timeout_type_is_reachable_from_the_package() -> None:
 
 
 def test_qmd_get_is_gone_from_the_cli_module() -> None:
-    """The CLI ``qmd get`` shim is deleted, not left to rot.
-
-    It shelled out for the librarian's source-aware read, which the
-    seam moved to the daemon's ``get`` with ``lineNumbers: false``
-    because the CLI line-numbers every line unconditionally. Its
-    docstring still named a dispatch that no longer existed, and it
-    raised ``QmdCommandError`` on a timeout where ``qmd_query`` in the
-    same module raised ``QmdTimeoutError`` carrying qmd's stderr.
-    """
+    """The CLI ``qmd get`` shim is deleted, not left to rot."""
     from lies.qmd import cli
 
     assert not hasattr(cli, "qmd_get"), (
@@ -286,20 +227,7 @@ def test_qmd_get_is_gone_from_the_cli_module() -> None:
 def test_a_query_bounds_its_idle_time_to_the_model_load_tail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A CLI-path query must not be killed while it is loading models.
-
-    `qmd_query` spawns a fresh `qmd query` per call, so it pays a full
-    model load every time -- the daemon keeps models warm, the CLI path
-    never does. Measured on this host over 10 identical queries with a
-    warm model cache: 3.9-10.9s typical, with a tail of 31.2s and
-    67.7s. The 30s idle default fires inside that tail and reports a
-    healthy query as `QmdWedgeError`, then `QmdTimeoutError` at the
-    total bound.
-
-    Both bounds are raised to fit the measured tail. The idle bound
-    stays well under the total so a genuinely wedged subprocess is still
-    caught with its `last_output` tail intact.
-    """
+    """A CLI-path query must not be killed while it is loading models."""
     import json
     from types import SimpleNamespace
 

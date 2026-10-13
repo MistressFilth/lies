@@ -162,16 +162,7 @@ def test_module_exposes_no_stop_function() -> None:
 
 
 def test_daemon_lifecycle_uses_run_qmd_not_subprocess_run() -> None:
-    """Pin the PR #105 follow-up migration: the 3 daemon-lifecycle sites
-    must not call ``subprocess.run(...)`` (the str-returning, pipe-buffer-
-    deadlock-prone wrapper). They must route through ``_run_qmd`` instead.
-
-    Plain string grep on the source. The forbidden patterns are exact:
-    ``subprocess.run(`` is the str-returning call site shape, and the
-    ``TODO(qmd-drain follow-up)`` markers explicitly pointed at the
-    deferred migration. ``subprocess.TimeoutExpired`` stays legitimate
-    (still imported and raised in the ``except`` branches).
-    """
+    """The three daemon-lifecycle sites must not call ``subprocess.run``."""
     from pathlib import Path as _Path
 
     src_path = _Path(qmd_daemon.__file__)

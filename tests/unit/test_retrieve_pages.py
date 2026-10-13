@@ -64,10 +64,7 @@ def test_retrieve_pages_returns_qmd_hits_with_empty_reason(wiki: Wiki) -> None:
 
 
 def test_retrieve_pages_reports_qmd_unavailable_when_both_passes_fail(wiki: Wiki) -> None:
-    """Both passes raise QmdNotInstalledError; the retriever reports the
-    failure reason and returns empty pages (the wiki/index.md fallback
-    was retired with the two-pass refactor — the qmd story alone owns
-    retrieval now)."""
+    """When both qmd passes fail, the retriever reports the failure reason and returns no pages."""
 
     def fake_search(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
         raise QmdNotInstalledError("qmd not on PATH")
@@ -111,16 +108,7 @@ def test_retrieve_pages_returns_empty_list_when_nothing_readable(tmp_path: Path)
 
 
 def test_synthesize_answer_output_unchanged_by_the_lift(wiki: Wiki) -> None:
-    """Characterization: pins the extractive bullet the synthesizer emits.
-
-    Task 3 (F19) replaced the F19 placeholder (``_excerpt_from_spans``)
-    with the per-span pick logic inlined in :func:`build_answer_from_pages`.
-    The bullet shape is now ``[[slug]]: "verbatim"`` per spec §4
-    ("Extractive fallback"). The fixture page has YAML frontmatter and
-    no headings; ``parse_spans`` emits a single span whose body is the
-    entire file content, so the verbatim quote carries the frontmatter
-    text. No ``Footnotes:`` block is appended.
-    """
+    """Characterization: pins the extractive bullet the synthesizer emits."""
 
     def fake_search(
         *_args: object, collection_filter=None, **_kwargs: object
@@ -218,13 +206,7 @@ def tagged_wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
 def test_collections_matching_implicit_self_tag_matches_collection_name(
     tagged_wiki: Wiki,
 ) -> None:
-    """A collection matches ``+<name>`` regardless of any tag metadata.
-
-    Library collections carry no per-collection yaml-declared tags;
-    the collection name is the only addressable atom. ``+pyspark``
-    must still resolve to the pyspark collection because the
-    implicit-self-tag rule covers the name.
-    """
+    """A collection matches ``+<name>`` regardless of any tag metadata."""
     tf = ResolvedTagFilter(include=Include("pyspark"))
     assert _collections_matching(tf) == {"pyspark"}
 
@@ -240,23 +222,13 @@ def test_collections_matching_include_matches_known_collection_name(
 def test_collections_matching_include_unknown_collection_returns_empty(
     tagged_wiki: Wiki,
 ) -> None:
-    """``+provider`` matches nothing because no library collection is
-    named ``provider``. Library collections carry no yaml-declared
-    tags, so multi-tag matching is no longer addressable here — that
-    semantic is dead under library-first resolution.
-    """
+    """``+provider`` matches nothing because no library collection is named ``provider``."""
     tf = ResolvedTagFilter(include=Include("provider"))
     assert _collections_matching(tf) == set()
 
 
 def test_collections_matching_and_chain_intersects(tagged_wiki: Wiki) -> None:
-    """``+airflow&amazon`` requires both atoms on the SAME collection.
-
-    Library collections are name-only — no collection can match both
-    ``airflow`` and ``amazon`` simultaneously because each only
-    matches itself. The And-chain therefore returns empty, even though
-    the two atoms are individually valid.
-    """
+    """``+airflow&amazon`` requires both atoms on the SAME collection."""
     tf = ResolvedTagFilter(include=And(Include("airflow"), Include("amazon")))
     assert _collections_matching(tf) == set()
 
@@ -270,8 +242,7 @@ def test_collections_matching_or_chain_unions(tagged_wiki: Wiki) -> None:
 def test_collections_matching_exclude_drops_matching_collection(
     tagged_wiki: Wiki,
 ) -> None:
-    """A bare ``-amazon`` drops every library collection named amazon.
-    Without an include, every other collection is kept."""
+    """A bare ``-amazon`` drops every library collection named amazon."""
     tf = ResolvedTagFilter(exclude=Include("amazon"))
     assert _collections_matching(tf) == {"airflow", "pyspark"}
 
@@ -307,11 +278,7 @@ def test_collections_matching_no_library_returns_empty(tmp_path: Path) -> None:
 def test_collections_matching_unknown_include_tag_returns_empty(
     tagged_wiki: Wiki,
 ) -> None:
-    """An include atom that doesn't match any collection returns the
-    empty set. The resolver already validated the tag exists in the
-    available set, so this is the retriever-side mirror — the resolver
-    says ``+airflow`` exists; the retriever says no collection's
-    effective set contains it (would be a bug elsewhere)."""
+    """An include atom that doesn't match any collection returns the empty set."""
     tf = ResolvedTagFilter(include=Include("nope"))
     assert _collections_matching(tf) == set()
 
@@ -407,8 +374,7 @@ def python_django_wiki(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiki:
 def test_collections_matching_t_qualifier_matches_collection_name(
     airflow_cnn_wiki: Wiki,
 ) -> None:
-    """Library collections are name-only; ``t:`` and ``c:`` collapse to the same
-    answer — only the collection named airflow matches."""
+    """Library collections are name-only; ``t:`` and ``c:`` collapse to the same answer — only the collection named airflow matches."""
     tf = ResolvedTagFilter(include=Include("airflow", qualifier="t"))
     assert _collections_matching(tf) == {"airflow"}
 
@@ -424,8 +390,7 @@ def test_collections_matching_c_qualifier_strict_name(
 def test_collections_matching_t_then_c_exclude(
     airflow_cnn_wiki: Wiki,
 ) -> None:
-    """``+t:airflow -c:airflow`` returns empty — the include matches only
-    airflow, and the exclude drops the collection that matched."""
+    """``+t:airflow -c:airflow`` returns empty — the include matches only airflow, and the exclude drops the collection that matched."""
     tf = ResolvedTagFilter(
         include=Include("airflow", qualifier="t"),
         exclude=Include("airflow", qualifier="c"),
@@ -436,16 +401,7 @@ def test_collections_matching_t_then_c_exclude(
 def test_collections_matching_t_python_c_python_excludes_self(
     python_django_wiki: Wiki,
 ) -> None:
-    """``+t:python -c:python`` matches python and then drops it; the only
-    other collection (django) does NOT have python as an addressable
-    atom under library semantics, so the result is empty.
-
-    Under library semantics this test reads as: ``t:python`` resolves
-    to {python}, the exclude removes python, leaving empty. The
-    predecessor's ``django`` outcome relied on django.yaml declaring
-    ``tags=[python, web]``, which is a wiki-yaml semantic that does
-    not exist in the library model.
-    """
+    """``+t:python -c:python`` matches python and then drops."""
     tf = ResolvedTagFilter(
         include=Include("python", qualifier="t"),
         exclude=Include("python", qualifier="c"),
@@ -459,9 +415,7 @@ def test_collections_matching_t_python_c_python_excludes_self(
 def test_retrieve_pages_threads_tag_filter_as_collection_filter(
     tagged_wiki: Wiki,
 ) -> None:
-    """``retrieve_pages(tag_filter=...)`` resolves the filter to a set
-    of allowed collection names and forwards it as ``collection_filter``
-    to the qmd_search callable."""
+    """``retrieve_pages(tag_filter=...)`` resolves the filter to a set of allowed collection names and forwards it as ``collection_filter`` to the qmd_search."""
     captured_filters: list[set[str] | None] = []
 
     def fake_search(*_args: object, **kwargs: object) -> list[dict[str, object]]:
@@ -493,10 +447,7 @@ def test_retrieve_pages_threads_tag_filter_as_collection_filter(
 def test_retrieve_pages_tag_filter_drops_non_matching_qmd_hits(
     tagged_wiki: Wiki,
 ) -> None:
-    """End-to-end: real ``qmd_query`` (mocked subprocess) returns hits
-    across multiple collections, the tag filter keeps only the airflow
-    hit. Confirms the seam works against the production callable, not
-    just the test stub."""
+    """End-to-end: real ``qmd_query`` (mocked subprocess) returns hits across multiple collections, the tag filter keeps only the airflow hit."""
     import json
     import subprocess
     from unittest.mock import patch
@@ -562,11 +513,7 @@ def test_retrieve_pages_without_tag_filter_passes_none_collection_filter(
 def test_retrieve_pages_tag_filter_with_no_matching_collections_reports_failure(
     tagged_wiki: Wiki,
 ) -> None:
-    """A filter that resolves to zero collections leaves qmd with an
-    empty post-filter list, so qmd raises ``QmdNoResultsError``. Both
-    passes fail (no library hits, no wiki hits), so the retriever
-    surfaces ``qmd_no_results`` and an empty page list — the
-    ``wiki/index.md`` fallback was retired with the two-pass refactor."""
+    """A filter that resolves to zero collections leaves qmd with an empty post-filter list, so qmd raises ``QmdNoResultsError``."""
     captured_filters: list[set[str] | None] = []
 
     def fake_search(*_args: object, **kwargs: object) -> list[dict[str, object]]:
@@ -588,13 +535,7 @@ def test_retrieve_pages_tag_filter_with_no_matching_collections_reports_failure(
 
 
 def test_collections_matching_no_malformed_yaml_concern() -> None:
-    """Library collections are directories, not YAML configs.
-
-    Library-first resolution means wiki YAML is no longer consulted
-    for collection metadata. There is no malformed-yaml failure mode
-    to defend against — if a directory exists under
-    ``Library.collections_root/``, it counts; if not, it doesn't.
-    """
+    """Library collections are directories, not YAML configs."""
     # This test is intentionally empty; it documents the removal of
     # the predecessor's malformed-yaml defense now that collections
     # are directory-only and yaml-free.
@@ -614,8 +555,7 @@ def test_collections_matching_no_malformed_yaml_concern() -> None:
 
 
 def test_resolve_qmd_pages_library_first(tmp_path: Path) -> None:
-    """qmd hit at ``claude_platform/foo.md`` resolves to the library
-    collections root, not ``wiki.wiki_dir``. Source is ``library``."""
+    """Qmd hit at ``claude_platform/foo.md`` resolves to the library collections root, not ``wiki.wiki_dir``."""
     from lies.library.paths import Library
     from lies.query.synthesizer import _resolve_qmd_pages
 
@@ -638,8 +578,7 @@ def test_resolve_qmd_pages_library_first(tmp_path: Path) -> None:
 
 
 def test_resolve_qmd_pages_wiki_when_library_missing(tmp_path: Path) -> None:
-    """When the library has no file at the qmd path, fall back to
-    ``wiki.wiki_dir``. Source is ``wiki``."""
+    """When the library has no file at the qmd path, fall back to ``wiki.wiki_dir``."""
     from lies.library.paths import Library
     from lies.query.synthesizer import _resolve_qmd_pages
 
@@ -664,8 +603,7 @@ def test_resolve_qmd_pages_wiki_when_library_missing(tmp_path: Path) -> None:
 
 
 def test_resolve_qmd_pages_collision_keeps_both_sources(tmp_path: Path) -> None:
-    """Same path in both roots surfaces as two PageRead objects with
-    distinct sources. Library is canonical; wiki is the override."""
+    """Same path in both roots surfaces as two PageRead objects with distinct sources."""
     from lies.library.paths import Library
     from lies.query.synthesizer import _resolve_qmd_pages
 
@@ -696,8 +634,7 @@ def test_resolve_qmd_pages_collision_keeps_both_sources(tmp_path: Path) -> None:
 
 
 def test_resolve_qmd_pages_path_traversal_blocked_for_library(tmp_path: Path) -> None:
-    """A qmd hit whose path escapes the library collections root is
-    dropped (path traversal defense, mirrors existing wiki-side check)."""
+    """A qmd hit whose path escapes the library collections root is dropped (path traversal defense, mirrors existing wiki-side check)."""
     from lies.library.paths import Library
     from lies.query.synthesizer import _resolve_qmd_pages
 
@@ -721,10 +658,7 @@ def test_resolve_qmd_pages_path_traversal_blocked_for_library(tmp_path: Path) ->
 
 
 def test_resolve_qmd_path_in_wiki_strips_wiki_collection_prefix(tmp_path: Path) -> None:
-    """A qmd hit ``wiki_default/concepts/local.md`` resolves to
-    ``wiki.wiki_dir / concepts/local.md`` — not
-    ``wiki.wiki_dir / wiki_default / concepts/local.md``.
-    """
+    """A qmd hit ``wiki_default/concepts/local.md`` resolves to ``wiki.wiki_dir / concepts/local.md`` — not ``wiki.wiki_dir / wiki_default / concepts/local.md``."""
     from lies.query.synthesizer import _resolve_qmd_path_in_wiki
 
     root = tmp_path / "wiki"
@@ -748,8 +682,7 @@ def test_resolve_qmd_path_in_wiki_strips_wiki_collection_prefix(tmp_path: Path) 
 def test_resolve_qmd_path_in_wiki_strips_prefix_for_non_default_wiki(
     tmp_path: Path,
 ) -> None:
-    """The strip is parameterized by the wiki's name, not hard-coded to
-    ``default`` — a wiki named ``research`` strips ``wiki_research/``."""
+    """The strip is parameterized by the wiki's name, not hard-coded to ``default`` — a wiki named ``research`` strips ``wiki_research/``."""
     from lies.query.synthesizer import _resolve_qmd_path_in_wiki
 
     root = tmp_path / "wiki"
@@ -768,8 +701,7 @@ def test_resolve_qmd_path_in_wiki_strips_prefix_for_non_default_wiki(
 def test_resolve_qmd_path_in_wiki_unchanged_when_no_collection_prefix(
     tmp_path: Path,
 ) -> None:
-    """A path without the ``wiki_<name>/`` prefix still resolves cleanly —
-    the strip is a no-op when the prefix is absent."""
+    """A path without the ``wiki_<name>/`` prefix still resolves cleanly — the strip is a no-op when the prefix is absent."""
     from lies.query.synthesizer import _resolve_qmd_path_in_wiki
 
     root = tmp_path / "wiki"
@@ -790,11 +722,7 @@ def test_resolve_qmd_path_in_wiki_unchanged_when_no_collection_prefix(
 def test_retrieve_pages_wiki_pass_with_collection_prefix_resolves(
     tmp_path: Path,
 ) -> None:
-    """End-to-end: when the wiki pass returns paths with the
-    ``wiki_<name>/`` prefix, ``retrieve_pages`` still surfaces the
-    underlying file. Catches the regression where
-    ``_resolve_qmd_path_in_wiki`` joined ``wiki.wiki_dir / raw``
-    blindly and produced a non-existent path."""
+    """End-to-end: when the wiki pass returns paths with the ``wiki_<name>/`` prefix, ``retrieve_pages`` still surfaces the underlying file."""
     from lies.library.paths import Library
 
     Library.open.cache_clear()
@@ -838,9 +766,7 @@ def test_retrieve_pages_wiki_pass_with_collection_prefix_resolves(
 
 
 def test_retrieve_pages_runs_two_qmd_passes(tmp_path: Path) -> None:
-    """retrieve_pages runs two qmd_query calls: one for the library
-    collections, one for the wiki-rooted collection. Both result
-    sets merge into the returned pages."""
+    """Retrieve_pages runs two qmd_query calls: one for the library collections, one for the wiki-rooted collection."""
     from lies.library.paths import Library
 
     Library.open.cache_clear()
@@ -878,9 +804,7 @@ def test_retrieve_pages_runs_two_qmd_passes(tmp_path: Path) -> None:
 
 
 def test_retrieve_pages_wiki_only_fallback_reason(tmp_path: Path) -> None:
-    """When library returns no results but wiki returns hits, the
-    fallback_reason is ``wiki_only`` and the body opens with the
-    not-grounded preamble."""
+    """When library returns no results but wiki returns hits, the fallback_reason is ``wiki_only`` and the body opens with the not-grounded preamble."""
     from lies.library.paths import Library
     from lies.query.synthesizer import FALLBACK_REASON_WIKI_ONLY
 
@@ -918,8 +842,7 @@ def test_retrieve_pages_wiki_only_fallback_reason(tmp_path: Path) -> None:
 
 
 def test_retrieve_pages_dedupes_wiki_hits_across_passes(tmp_path: Path) -> None:
-    """The same wiki-only path returned by both qmd passes surfaces as
-    one ``PageRead`` — not two with the same ``(rel_path, source)``."""
+    """The same wiki-only path returned by both qmd passes surfaces as one ``PageRead`` — not two with the same ``(rel_path, source)``."""
     from lies.library.paths import Library
 
     Library.open.cache_clear()

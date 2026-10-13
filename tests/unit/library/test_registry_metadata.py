@@ -82,8 +82,7 @@ def _cfg(
 def test_library_collection_metas_propagates_tags_and_scope_keywords(
     library: Library,
 ) -> None:
-    """``library_collection_metas`` carries tags + scope_keywords + source_url
-    from the on-disk ``config.yaml`` to ``LibraryCollectionMeta``."""
+    """``library_collection_metas`` carries tags + scope_keywords + source_url from the on-disk ``config.yaml`` to ``LibraryCollectionMeta``."""
     save_config(_cfg("alpha", tags=("plugins", "cli"), scope_keywords=("plugin", "cli")))
     metas = list(library_collection_metas())
     assert len(metas) == 1

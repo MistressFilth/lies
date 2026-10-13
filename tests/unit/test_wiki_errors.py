@@ -23,9 +23,7 @@ def test_wiki_not_registered_carries_fields() -> None:
 
 
 def test_wiki_not_registered_message_lists_resolved_root() -> None:
-    """``__str__`` must print the path the resolver actually probed
-    (the per-wiki directory under the XDG data home) so operators
-    can locate it on disk without guessing the ``lies`` segment."""
+    """``__str__`` prints the path the resolver actually probed, so operators can find it on disk."""
     err = WikiNotRegistered("missing", Path("/xdg/data"))
     assert str(err).startswith("wiki 'missing' not registered at /xdg/data/lies/missing;")
 

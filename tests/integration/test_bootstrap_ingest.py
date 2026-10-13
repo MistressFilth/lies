@@ -1,13 +1,4 @@
-"""End-to-end bootstrap coverage for ingest.
-
-Gated on ``INTEGRATION=1`` so a default ``make test`` run skips these
-(network-adjacent, real-filesystem) tests. The CLI test drives
-``lies ingest`` end-to-end against a local HTTP fixture serving an
-``llms.txt``-shaped body and asserts the same on-disk artifacts land
-under the XDG-routed config root.
-
-Run: ``INTEGRATION=1 pytest tests/integration/test_bootstrap_ingest.py -v``
-"""
+"""End-to-end bootstrap coverage for ingest."""
 
 from __future__ import annotations
 
@@ -86,15 +77,7 @@ def http_url() -> str:
 def test_cli_ingest_end_to_end(
     http_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``lies ingest <c> --source <http-url>`` bootstraps wiki + YAML end-to-end.
-
-    All XDG roots are monkeypatched to ``tmp_path`` so the resolved
-    wiki lives entirely under the per-test scratch dir. The CLI must
-    succeed, the wiki's data root must contain ``raw/<c>/`` (created
-    by the SCRAPE stage as soon as it mkdir's the per-collection raw
-    dir), and the collection YAML must land at the XDG-derived config
-    path (``$XDG_CONFIG_HOME/lies/<name>/collections/<c>.yaml``).
-    """
+    """``lies ingest <c> --source <http-url>`` bootstraps wiki + YAML end-to-end."""
     name = "integ-cli"
     monkeypatch.setenv("LIES_WIKI_NAME", name)
     monkeypatch.setattr("lies.cli.xdg.data_home", lambda: tmp_path)

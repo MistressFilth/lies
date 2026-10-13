@@ -1,9 +1,4 @@
-"""End-to-end integration tests for the ``lies migrate-collection-configs`` CLI.
-
-Exercises the CLI surface (``dry-run``, ``apply``, exit codes, idempotency,
-``--force`` overwrite of a library-side collision) — the unit suite covers
-the per-function helpers; this file pins the operator-facing contract.
-"""
+"""End-to-end integration tests for the ``lies migrate-collection-configs`` CLI."""
 
 from __future__ import annotations
 

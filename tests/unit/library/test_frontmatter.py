@@ -71,18 +71,7 @@ def test_ingested_at_capped_to_2099() -> None:
 
 
 def test_ingested_at_short_hash_falls_back_to_base_date() -> None:
-    """Minor 35: a hash shorter than 8 hex chars falls back to ``_BASE_DATE``.
-
-    The previous ``len(source_hash) < 4`` check was too permissive:
-    a 5-, 6-, or 7-char prefix would pass the guard, attempt a partial
-    ``int(source_hash[:8], 16)`` parse (only 5-7 chars were present so
-    the slice read past the end), raise ``ValueError``, and silently
-    fall back to ``_BASE_DATE``. The new guard reads
-    ``len(source_hash) < 8`` so the parse never attempts a
-    cross-boundary slice. Regression test: 7-char hash still produces
-    the base date (not a ``ValueError`` raised from
-    ``_ingested_at_from_hash``).
-    """
+    """A hash shorter than 8 hex chars falls back to ``_BASE_DATE``."""
     from datetime import date as _date
 
     from lies.library.frontmatter import _BASE_DATE, _ingested_at_from_hash
@@ -120,10 +109,7 @@ def test_title_with_colon_parses_as_single_scalar() -> None:
 
 
 def test_title_with_newline_is_stripped_not_injected() -> None:
-    """A newline in the title must be stripped so it cannot terminate the
-    frontmatter block and inject a second top-level key. The injected text
-    is folded into the title value, not parsed as a separate YAML key.
-    """
+    """A newline in the title must be stripped so it cannot terminate the frontmatter block and inject a second top-level key."""
     fm = build_frontmatter(
         title="Intro\nsource_url: https://evil",
         source_url="https://real.com/x",
@@ -168,9 +154,7 @@ def test_title_with_quote_and_backslash_round_trips() -> None:
 
 
 def test_default_title_from_slug_still_parses() -> None:
-    """The slug → title default (used by ``render_mirror``) must still
-    produce parseable YAML even when the slug is plain ASCII.
-    """
+    """The slug → title default (used by ``render_mirror``) must still produce parseable YAML even when the slug is plain ASCII."""
     # The slug-to-title derivation lives in ``render_mirror``; here we
     # assert the frontmatter side of that path is well-formed for the
     # typical slug shape ``getting-started``.
@@ -208,13 +192,7 @@ def test_default_title_from_slug_still_parses() -> None:
     ],
 )
 def test_strip_frontmatter(text: str, expected: str) -> None:
-    """``strip_frontmatter`` removes a leading block and nothing else.
-
-    The writer prepends frontmatter unconditionally, so re-ingesting a
-    file that is already a mirror stacks a second block. Stripping first
-    is what makes ``render_mirror`` idempotent. An unterminated block is
-    left alone: a document opening with a thematic break must survive.
-    """
+    """``strip_frontmatter`` removes a leading block and nothing else."""
     from lies.library.frontmatter import strip_frontmatter
 
     assert strip_frontmatter(text) == expected

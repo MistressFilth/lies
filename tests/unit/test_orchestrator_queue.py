@@ -74,10 +74,7 @@ def test_run_enrichment_enqueues_on_wiki_lock_busy(orchestrator: Orchestrator) -
 def test_format_receipt_renders_queued_for_retry_in_spec_format(
     orchestrator: Orchestrator,
 ) -> None:
-    """A queued-retry receipt renders as ``(memory: queued for retry — <reason>)``.
-
-    Spec format: em-dash separator, spaces around the dash, no underscore.
-    """
+    """A queued-retry receipt renders as ``(memory: queued for retry — <reason>)``."""
     from lies.memory.models import MemoryReceipt
 
     receipt = MemoryReceipt(
@@ -97,11 +94,7 @@ def test_format_receipt_renders_queued_for_retry_in_spec_format(
 def test_format_receipt_renders_queued_alongside_durable_changes(
     orchestrator: Orchestrator,
 ) -> None:
-    """When ``changed_pages`` is non-empty, queued errors share the block.
-
-    The spec says: ``append ``  queued for retry: {reason}`` to the
-    existing multi-line block alongside the existing ``  notes:`` line``.
-    """
+    """When ``changed_pages`` is non-empty, queued errors share the block."""
     from lies.memory.models import MemoryReceipt, OperationKind, PageReference
 
     receipt = MemoryReceipt(

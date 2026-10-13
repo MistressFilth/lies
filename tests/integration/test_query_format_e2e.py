@@ -1,14 +1,4 @@
-"""End-to-end integration tests for F1 query output formats.
-
-Spec § 13 calls for one happy-path integration test per format plus an
-auto-route test and an override-mismatch test. The agent's LLM is
-mocked via ``query_synthesizer_agent.run_sync`` (the pattern used by
-``tests/integration/test_end_to_end.py``); the marp CLI is mocked via
-``shutil.which`` so the marp subprocess never runs in CI.
-
-Gated on ``INTEGRATION=1`` per the
-``tests/integration/conftest.py::pytest_collection_modifyitems`` hook.
-"""
+"""End-to-end integration tests for F1 query output formats."""
 
 from __future__ import annotations
 
@@ -127,15 +117,7 @@ def _patch_synthesizer(
 
 @pytest.mark.parametrize("fmt", ["md", "table", "marp", "chart"])
 def test_run_query_happy_path_each_format(wiki_copy: Path, fmt: str) -> None:
-    """``Orchestrator.run_query`` returns a ``SynthesizedAnswer`` with the
-    requested ``format`` field set, for each of the four documented values.
-
-    The synthesizer emits ``format_hint=fmt``; the orchestrator's
-    success path produces an answer whose ``format`` field matches the
-    validated hint (``md`` and ``chart`` always pass; ``table`` and
-    ``marp`` validate when the body actually carries the corresponding
-    shape — we feed shape-matching bodies here so the validator passes).
-    """
+    """``Orchestrator.run_query`` returns a ``SynthesizedAnswer`` with the requested ``format`` field set, for each of the four documented values."""
     wiki = make_wiki(name="sample", data_root=wiki_copy)
     orch = Orchestrator(wiki=wiki, models=models_for_tests("test"))
 
@@ -166,15 +148,7 @@ def test_run_query_happy_path_each_format(wiki_copy: Path, fmt: str) -> None:
 
 
 def test_run_query_auto_route_passes_format_field(wiki_copy: Path) -> None:
-    """The auto-route flow's ``format`` field surfaces the synthesizer's
-    ``format_hint`` to the caller. Without it, downstream CLI / MCP
-    surfaces cannot dispatch on the validated format.
-
-    Mirrors the regression pin spec § 13 calls out:
-    ``tests/integration/test_end_to_end.py::test_run_query_returns_empty_when_qmd_unavailable``
-    asserts the default ``format='md'``; this test pins the success-path
-    contract for the synthesizer's validated hint.
-    """
+    """The auto-route flow's ``format`` field surfaces the synthesizer's ``format_hint`` to the caller."""
     wiki = make_wiki(name="sample", data_root=wiki_copy)
     orch = Orchestrator(wiki=wiki, models=models_for_tests("test"))
 
@@ -195,15 +169,7 @@ def test_run_query_auto_route_passes_format_field(wiki_copy: Path) -> None:
 
 
 def test_run_query_with_format_marp_overrides_auto_route(wiki_copy: Path, tmp_path: Path) -> None:
-    """``Orchestrator.run_query_with_format(cli_format='marp')`` runs the
-    synthesizer with a marp-shaped body and the returned ``format`` field
-    reflects the override.
-
-    Stubs ``marp`` on PATH (via ``shutil.which``) so the marp CLI is
-    never actually invoked — the test runs entirely offline. The CLI
-    wrapping path is tested separately in ``tests/unit/test_query_cli.py``
-    (the first-call/second-call flow lives there).
-    """
+    """``Orchestrator.run_query_with_format(cli_format='marp')`` runs the synthesizer with a marp-shaped body and the returned ``format`` field reflects."""
     wiki = make_wiki(name="sample", data_root=wiki_copy)
     orch = Orchestrator(wiki=wiki, models=models_for_tests("test"))
 

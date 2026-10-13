@@ -137,8 +137,7 @@ def test_migrate_noop_when_lies_dir_missing(tmp_path: Path) -> None:
 
 
 def test_migrate_raises_when_legacy_path_is_a_file(tmp_path: Path) -> None:
-    """``legacy_path`` is a file (e.g. user pointed at the wrong path)
-    -> ``NotADirectoryError`` instead of a silent empty success."""
+    """``legacy_path`` is a file (e.g. user pointed at the wrong path) -> ``NotADirectoryError`` instead of a silent empty success."""
     file_path = tmp_path / "not-a-directory"
     file_path.write_text("oops")
     with pytest.raises(NotADirectoryError, match="must be a directory"):
@@ -146,10 +145,7 @@ def test_migrate_raises_when_legacy_path_is_a_file(tmp_path: Path) -> None:
 
 
 def test_migrate_force_quarantines_conflicting_sources(tmp_path: Path) -> None:
-    """``--force`` preserves conflicting source bytes at
-    ``<legacy_path>/.xdg-migration-conflicts/`` instead of silently
-    dropping them. The legacy ``.lies/`` directory is still removed and
-    the destination file is left untouched."""
+    """``--force`` preserves conflicting source bytes at ``<legacy_path>/.xdg-migration-conflicts/`` instead of silently dropping them."""
     legacy = _copy_legacy(tmp_path)
     kwargs = _xdg_kwargs(tmp_path)
     target = kwargs["xdg_config_home"] / "lies" / "migrated" / "schema.md"

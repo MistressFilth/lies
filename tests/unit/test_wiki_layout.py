@@ -46,14 +46,7 @@ def _stub_qmd_registration(monkeypatch: pytest.MonkeyPatch, request: pytest.Fixt
 
 @pytest.mark.slow
 def test_git_init_initial_writes_gitignore_excluding_lies(tmp_path: Path) -> None:
-    """``git_init_initial`` writes ``<wiki>/.gitignore`` covering ``.lies/``.
-
-    The sidecar at ``<wiki>/.lies/memory_plans.jsonl`` is untracked on every
-    fresh wiki. ``WikiMemoryService.apply_plan`` snapshots the working tree
-    via ``git stash push --include-untracked``; without this ignore the
-    untracked sidecar is stashed and dropped on success, silently losing
-    prior sidecar lines.
-    """
+    """``git_init_initial`` writes ``<wiki>/.gitignore`` covering ``.lies/``."""
     WikiLayout(tmp_path).init()
     git_init_initial(tmp_path)
     gitignore = tmp_path / ".gitignore"
@@ -101,12 +94,7 @@ def test_init_is_idempotent(tmp_path: Path) -> None:
 
 
 def test_gitignore_lines_includes_catalog_pattern() -> None:
-    """The catalog entry is anchored under ``wiki/``; root-anchored entries are gone.
-
-    The catalog lives at ``<wiki>/wiki/.lies/catalog.db`` (not at the
-    wiki root), so a single ``wiki/.lies/catalog.db*`` pattern
-    subsumes the database, WAL, and SHM siblings.
-    """
+    """The catalog entry is anchored under ``wiki/``; root-anchored entries are gone."""
     lines = _gitignore_lines()
     assert any("wiki/.lies/catalog.db*" in line for line in lines)
     assert not any(line.startswith(".lies/catalog.db") for line in lines), (

@@ -1,42 +1,4 @@
-"""A self-ingest is a structural no-op, and an unmanaged mirror is
-reported as a conflict it is not.
-
-Both defects come from one place. ``_process_item`` computes
-``target = coll.dir / f"{slug}.md"`` and, when the target already
-exists, asks one two-state question about it:
-
-    if existing_hash and existing_hash == item.source_hash:  # skip
-    ...                                                     # quarantine
-
-The domain has three states, not two. A mirror the pipeline never
-wrote carries *no* ``source_hash`` at all, and the guard above falls
-through to the quarantine branch that means "the mirror disagrees with
-the source". The reason it writes is the tell::
-
-    mirror-collision:page:existing-!=new-55d67183
-
-``existing-`` with nothing after it is not a disagreement. It is the
-absence of a value, described as a disagreement.
-
-Measured, sandboxed, ``--force`` absent (``tools/probe_self_ingest.py``)::
-
-    NORMAL ingest, run 1  created=1  errors=0
-    NORMAL ingest, run 2  skipped=1  errors=0
-    SELF   ingest, run 1  errors=1  QUARANTINE mirror-collision:page:existing-!=new-55d67183
-    SELF   ingest, run 2  errors=1  QUARANTINE mirror-collision:page:existing-!=new-55d67183
-
-The normal shape converges, which is the whole point of the
-idempotency contract. The self shape never does, and never writes a
-byte.
-
-A self-ingest is ``lies ingest --batch`` pointed at a live collection
-directory, or ``--source`` pointed at a page inside one. The walk then
-enumerates the mirrors and asks each one whether its own source has
-changed. There is no answer to give that is not circular: the only
-reachable outcomes are "skip everything" and "rewrite everything", and
-today it is neither — it is a run that reports an error for every page
-it finds and changes nothing.
-"""
+"""A self-ingest is a structural no-op, and an unmanaged mirror is reported as a conflict it is not."""
 
 from __future__ import annotations
 
@@ -110,11 +72,7 @@ def no_commit(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_a_batch_ingest_of_a_collection_dir_is_refused(lib: Library) -> None:
-    """``--batch <collection_dir>`` is refused before any page is read.
-
-    Not quarantined per page and not silently skipped: the whole run is
-    a caller error, and the caller is the only thing that can fix it.
-    """
+    """``--batch <collection_dir>`` is refused before any page is read."""
     coll = _collection(lib, "selfcoll")
     (coll / "page.md").write_text(_BODY)
 
@@ -129,13 +87,7 @@ def test_a_batch_ingest_of_a_collection_dir_is_refused(lib: Library) -> None:
 def test_a_batch_ingest_of_a_subdirectory_of_a_collection_is_refused(
     lib: Library,
 ) -> None:
-    """A subdirectory is the same defect, not a smaller one.
-
-    ``derive_nested_slug`` mirrors the relative path, so
-    ``--batch <coll>/guides`` still lands every page on top of itself
-    at ``<coll>/guides/<slug>.md``. Checking only for equality would
-    let this through and reproduce the identical no-op.
-    """
+    """A subdirectory is the same defect, not a smaller one."""
     coll = _collection(lib, "selfcoll")
     guides = coll / "guides"
     guides.mkdir()
@@ -146,12 +98,7 @@ def test_a_batch_ingest_of_a_subdirectory_of_a_collection_is_refused(
 
 
 def test_a_source_ingest_of_a_page_inside_a_collection_is_refused(lib: Library) -> None:
-    """``--source`` into a collection page hits the same collision.
-
-    One page, one target, the same path. Guarding only the batch entry
-    point would leave the single-source spelling of the same mistake
-    unguarded.
-    """
+    """``--source`` into a collection page hits the same collision."""
     coll = _collection(lib, "selfcoll")
     (coll / "page.md").write_text(_BODY)
 
@@ -160,12 +107,7 @@ def test_a_source_ingest_of_a_page_inside_a_collection_is_refused(lib: Library) 
 
 
 def test_the_refusal_happens_before_anything_is_written(lib: Library) -> None:
-    """A refused run leaves the tree exactly as it found it.
-
-    The per-page path this replaces *did* write: it created a poison
-    copy of every page and a ``.reason`` sidecar, so refusing late would
-    leave the artifacts the refusal is meant to prevent.
-    """
+    """A refused run leaves the tree exactly as it found it."""
     coll = _collection(lib, "selfcoll")
     (coll / "page.md").write_text(_BODY)
     before = sorted(p.name for p in lib.git_root.rglob("*"))
@@ -180,11 +122,7 @@ def test_a_normal_ingest_of_a_sibling_directory_is_still_allowed(
     lib: Library,
     no_commit: None,
 ) -> None:
-    """The refusal keys on containment, not on the word "collection".
-
-    A source tree that merely sits next to the library is the ordinary
-    case; refusing it would break every real ingest.
-    """
+    """The refusal keys on containment, not on the word "collection"."""
     _collection(lib, "normalcoll")
     source = lib.git_root.parent / "elsewhere"
     source.mkdir(parents=True, exist_ok=True)
@@ -200,11 +138,7 @@ def test_a_normal_ingest_still_converges_on_a_second_run(
     lib: Library,
     no_commit: None,
 ) -> None:
-    """The fix leaves the idempotency contract intact.
-
-    Without this, a guard that refused too much would still pass every
-    refusal test above while making ingest impossible.
-    """
+    """The fix leaves the idempotency contract intact."""
     _collection(lib, "normalcoll")
     source = lib.git_root.parent / "elsewhere"
     source.mkdir(parents=True, exist_ok=True)
@@ -227,14 +161,7 @@ def test_a_normal_ingest_still_converges_on_a_second_run(
 def test_a_mirror_with_no_source_hash_is_not_reported_as_a_conflict(
     lib: Library,
 ) -> None:
-    """The three-state question, stated as the property.
-
-    A page sitting where a mirror would sit, carrying no frontmatter,
-    is a page the pipeline never wrote. Reporting
-    ``existing-!=new-<hash>`` tells the operator their mirror disagrees
-    with the source when in fact their mirror was never recorded at all
-    — and an empty left-hand side is the proof, printed in the message.
-    """
+    """The three-state question, stated as the property."""
     coll = _collection(lib, "handwritten")
     (coll / "page.md").write_text(_BODY)
     source = lib.git_root.parent / "elsewhere"
@@ -257,11 +184,7 @@ def test_a_mirror_with_no_source_hash_is_not_reported_as_a_conflict(
 
 
 def test_an_unmanaged_mirror_is_still_preserved(lib: Library) -> None:
-    """Fail-loud, not fail-destructive.
-
-    The page is quarantined, so it is preserved, and the operator's
-    content is not overwritten by a hash decision they did not make.
-    """
+    """Fail-loud, not fail-destructive."""
     coll = _collection(lib, "handwritten")
     (coll / "page.md").write_text(_BODY)
     source = lib.git_root.parent / "elsewhere"
@@ -274,12 +197,7 @@ def test_an_unmanaged_mirror_is_still_preserved(lib: Library) -> None:
 
 
 def test_a_genuine_hash_mismatch_still_says_mirror_collision(lib: Library) -> None:
-    """The real conflict keeps its real name.
-
-    A three-state test that made the third state honest must not have
-    widened the second: a mirror carrying a *different* hash is a
-    disagreement, and the operator is told so.
-    """
+    """The real conflict keeps its real name."""
     coll = _collection(lib, "conflicted")
     (coll / "page.md").write_text(
         '---\ntitle: "Page"\nsource_url: ""\nsource_path: "page.md"\n'
@@ -324,14 +242,7 @@ def test_an_unchanged_source_still_skips_against_a_managed_mirror(
 
 
 def test_the_cli_renders_the_refusal_without_a_traceback(lib: Library, tmp_path: Path) -> None:
-    """Exit 2 and one ``error:`` line, like the command's other refusals.
-
-    Without this the typed error escapes ``ingest`` and Rich prints a
-    twelve-line traceback: louder, and saying less. The operator is
-    told which library line they tripped rather than what to pass
-    instead. Driven through the real Typer app so the rendering and the
-    exit code are both observed, not assumed.
-    """
+    """Exit 2 and one ``error:`` line, like the command's other refusals."""
     from typer.testing import CliRunner
 
     from lies.cli import app

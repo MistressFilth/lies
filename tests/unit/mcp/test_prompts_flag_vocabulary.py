@@ -1,19 +1,4 @@
-"""Every flag a prompt advertises must reach the command it renders.
-
-Three of the defects this branch shipped came from one root cause: the
-flag vocabulary in a prompt body and the vocabulary the parser was told
-about drift apart, and nothing checked. ``sync --only`` rendered the
-flag into its own command and then reported it as unrecognized;
-``collections`` advertised ``--tags`` that no parser knew, so the value
-fell through as a bare positional; ``reindex --name X all`` swallowed
-the destructive marker into the name.
-
-The table below is the contract. Each row is a flag a prompt's
-``instructions.md`` entry or body promises, and the assertion is that
-the flag survives the parse into the rendered output -- not that it
-merely fails to be reported as unknown. "Not reported" is how all three
-defects hid.
-"""
+"""Every flag a prompt advertises must reach the command it renders."""
 
 from __future__ import annotations
 
@@ -140,13 +125,7 @@ class TestNoSilentFlagLoss:
     def test_boolean_written_with_equals_is_honoured(
         self, prompt_fn: object, tail: str, marker: str
     ) -> None:
-        """``--flag=true`` is a flag the user set, however they spelled it.
-
-        The value is meaningless on a boolean, so the parser discards
-        it -- but the flag itself must land, and the discard is named
-        in the body so the agent can tell the user their spelling was
-        off rather than silently guessing.
-        """
+        """``--flag=true`` is a flag the user set, however they spelled it."""
         [msg] = prompt_fn(tail)  # type: ignore[operator]
         body = rendered_body(msg)
         # The marker ends at a delimiter so it can only be satisfied by
@@ -161,12 +140,7 @@ class TestNoSilentFlagLoss:
 
 class TestDestructiveMarkerSurvives:
     def test_name_does_not_swallow_the_all_marker(self) -> None:
-        """The regression: ``--name`` was declared multi-word.
-
-        ``reindex --name pydantic all`` bound ``name='pydantic all'``
-        and left ``all_=False``, so a destructive full rebuild ran
-        without the confirmation the body promises.
-        """
+        """``--name`` must not be declared multi-word, or it swallows the ``all`` marker."""
         [msg] = reindex_prompt("--name pydantic all")
         body = rendered_body(msg)
         assert "name='pydantic'" in body

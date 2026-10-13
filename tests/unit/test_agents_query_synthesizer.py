@@ -104,16 +104,7 @@ def test_build_query_prompt_survives_missing_deps() -> None:
 
 @pytest.mark.slow
 def test_query_deps_carries_page_sources() -> None:
-    """``QueryDeps`` exposes ``page_sources`` keyed by the same path as
-    ``page_texts`` so the prompt can render ``[library]``/``[wiki]``
-    tags inline.
-
-    F19 (Task 5): ``page_sources`` is now a derived property over
-    ``LibrarianOutput.excerpts``. The discriminator carries through
-    ``PageExcerpt.collection`` (``"library"`` / ``"wiki"`` / any
-    other string → ``"library"``) so a librarian-built deps renders
-    correctly. The legacy direct-field shape is gone.
-    """
+    """``QueryDeps`` exposes ``page_sources`` keyed by the same path as ``page_texts`` so the prompt can render ``[library]``/``[wiki]`` tags inline."""
     excerpts = [
         PageExcerpt(
             collection="claude_platform",
@@ -145,27 +136,14 @@ def test_query_deps_carries_page_sources() -> None:
 
 @pytest.mark.slow
 def test_query_deps_librarian_output_required() -> None:
-    """``librarian_output`` is required (not defaulted) so a caller
-    that forgets to populate it fails fast at construction rather
-    than silently dropping the F19 evidence bundle from the prompt.
-
-    Replaces the pre-F19 ``test_query_deps_page_sources_required``
-    pin: the legacy fields are gone, the new required field is
-    ``librarian_output``.
-    """
+    """``librarian_output`` is required (not defaulted) so a caller that forgets to populate it fails fast at construction rather than silently dropping the F19."""
     with pytest.raises(TypeError):
         QueryDeps(question="q")  # type: ignore[call-arg]
 
 
 @pytest.mark.slow
 def test_build_query_prompt_renders_source_tag_inline() -> None:
-    """The rendered corpus carries a ``[library]`` / ``[wiki]`` tag
-    inline before each path so the LLM can apply the library-wins rule.
-
-    F19 (Task 5): the corpus is derived from
-    ``LibrarianOutput.excerpts`` (not direct ``page_texts`` /
-    ``page_sources`` maps), but the rendered shape is unchanged.
-    """
+    """The rendered corpus carries a ``[library]`` / ``[wiki]`` tag inline before each path so the LLM can apply the library-wins rule."""
     excerpts = [
         PageExcerpt(
             collection="claude_platform",

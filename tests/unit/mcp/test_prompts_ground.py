@@ -37,8 +37,7 @@ def test_ground_prompt_renders_cite_marker_form() -> None:
 
 
 def test_ground_prompt_parses_excludes_correctly() -> None:
-    """``-tag`` markers are routed into ``exclude_tags`` on the
-    dispatched search call."""
+    """``-tag`` markers are routed into ``exclude_tags`` on the dispatched search call."""
     from lies.mcp.prompts_impl import ground_prompt
 
     [msg] = ground_prompt("-t:draft -t:wip any question text")
@@ -63,8 +62,7 @@ def test_ground_prompt_no_filter_tokens() -> None:
 
 
 def test_ground_prompt_tolerates_an_apostrophe() -> None:
-    """Regression: ``shlex.split`` raised ``ValueError: No closing
-    quotation`` on any apostrophe, failing 6 of the 7 prompts."""
+    """An apostrophe in the question must not raise."""
     from lies.mcp.prompts_impl import ground_prompt
 
     [msg] = ground_prompt("what are Claude Code's plugin differences?")
@@ -74,8 +72,7 @@ def test_ground_prompt_tolerates_an_apostrophe() -> None:
 
 
 def test_ground_top_k_accepts_the_space_form() -> None:
-    """Only ``--top_k=N`` used to bind. With the space form, ``N`` leaked
-    into the query text and ``top_k`` silently fell back to the default."""
+    """``--top_k 5`` binds as well as ``--top_k=5``."""
     from lies.mcp.prompts_impl import ground_prompt
 
     [msg] = ground_prompt("--top_k 7 the question")
@@ -106,14 +103,7 @@ def test_ground_empty_tail_asks_for_a_question() -> None:
 
 
 def test_ground_a_tail_of_only_filters_asks_for_a_question() -> None:
-    """The guard ran before the filter pass, so it never fired.
-
-    A filter token is itself a positional, so ``+c:opencode`` and a
-    bare ``--top_k 5`` both satisfied the old emptiness check and
-    rendered ``search('')`` -- a query the qmd daemon treats as real.
-    ``ask`` had the check in the right place all along; ``ground`` did
-    not, and the CHANGELOG claimed both were fixed.
-    """
+    """A tail of nothing but filter markers asks for a question instead of running the search."""
     from lies.mcp.prompts_impl import ground_prompt
 
     for tail in ("+c:opencode", "-t:draft", "--top_k 5", "--top_k=5"):
@@ -134,8 +124,7 @@ def test_ground_filters_plus_a_question_still_render() -> None:
 
 
 def test_ground_names_an_unrecognized_flag() -> None:
-    """``--cleaup`` used to be dropped silently; a typo in a destructive
-    flag must not run the non-destructive path unremarked."""
+    """An unrecognized flag is named, never dropped silently."""
     from lies.mcp.prompts_impl import ground_prompt
 
     [msg] = ground_prompt("--cleaup 5 the question")
@@ -153,9 +142,7 @@ def test_ground_keeps_negative_numbers_in_the_query() -> None:
 
 
 def test_ground_names_a_malformed_top_k_instead_of_silently_defaulting() -> None:
-    """Every other malformed tail in this module gets a named note; a
-    swallowed ``--top_k`` read to the user as "you asked for 5, got 3"
-    with no cause attached."""
+    """A malformed ``--top_k`` is named, not silently defaulted."""
     from lies.mcp.prompts_impl import ground_prompt
 
     [msg] = ground_prompt("--top_k abc what changed")

@@ -125,20 +125,7 @@ def test_ask_envelope_propagates_searched_scope(monkeypatch: pytest.MonkeyPatch)
 def test_ask_returns_an_inconclusive_envelope_when_librarian_dispatch_fails(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """librarian_agent.run_sync raising → lib_ask() is inconclusive, not empty.
-
-    Reproduces the v0.40 live-test failure: pydantic-ai raises
-    ``UsageLimitExceeded("Exceeded maximum output retries (1)")`` when the
-    librarian LLM cannot produce a valid ``LibrarianOutput``. The MCP
-    ``lib_ask`` tool must not crash.
-
-    The envelope it returns used to be the "No relevant content found in
-    library" gap, which named a corpus problem for a model outage --
-    on the primary human-facing tool, using the exact string the
-    librarian contract designates as the canonical false claim. A
-    dispatch that never ran says nothing about the library, so the
-    envelope says so instead.
-    """
+    """Librarian_agent.run_sync raising → lib_ask() is inconclusive, not empty."""
     from lies.mcp import synth
 
     class _BoomAgent:
@@ -210,16 +197,7 @@ def test_librarian_agent_run_names_an_untyped_dispatch_failure_on_the_bundle(
 def test_a_transient_librarian_bundle_never_becomes_a_corpus_claim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The two flags travel together, and only the right one is read.
-
-    ``no_coverage`` alone cannot express "the dispatch failed": the
-    bundle has zero excerpts either way. A consumer that branches on
-    ``not excerpts`` first would emit the corpus claim, so
-    ``_ask_impl`` checks ``transient`` first, and a bundle that says
-    ``transient=True, no_coverage=False`` -- the pair
-    ``librarian_agent_run`` now returns -- takes the inconclusive
-    branch even though ``no_coverage`` is False.
-    """
+    """The two flags travel together, and only the right one is read."""
     from lies.mcp.synth import lib_ask
 
     lib_out = _fake_librarian_output(
@@ -244,14 +222,7 @@ def test_a_transient_librarian_bundle_never_becomes_a_corpus_claim(
 async def test_synthesize_reports_a_transient_digest_as_inconclusive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``ArchivistDigest.transient`` finally has a reader.
-
-    The field was set at three sites in ``grounding`` and read
-    nowhere in the package, while the 0.46.0 changelog advertised it
-    as the way to tell "the daemon failed" from "the corpus has
-    nothing". ``synthesize`` is the one registered consumer of a
-    digest, so it is where the distinction has to land.
-    """
+    """``ArchivistDigest.transient`` finally has a reader."""
     from lies.mcp import synth
     from lies.mcp.grounding import ArchivistDigest
 

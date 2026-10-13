@@ -1,12 +1,4 @@
-"""Pin the ingest prompt routes sources through the real ``lies ingest``.
-
-Every command in this file is a real one. The previous prompt rendered
-``--data-dir "$LIES_DATA"``, ``--type``, and ``--delete`` — options
-``lies ingest`` has never declared, so each of those commands exited 2
-before it ingested anything. ``lies ingest`` takes ``--source`` or
-``--batch`` and has no positional argument, so a bare path in the tail
-becomes ``--source``.
-"""
+"""The ingest prompt routes sources through the real ``lies ingest``."""
 
 from __future__ import annotations
 
@@ -31,11 +23,7 @@ def test_ingest_batch_routes_to_bash_cli() -> None:
 
 
 def test_ingest_asks_rather_than_rendering_a_placeholder() -> None:
-    """No source and no batch is a question, not a command.
-
-    The old body rendered ``--source '<source>'`` — a command with a
-    placeholder in it, which the agent would then run.
-    """
+    """No source and no batch is a question, not a command."""
     from lies.mcp.prompts_impl import ingest_prompt
 
     [msg] = ingest_prompt("")
@@ -63,12 +51,7 @@ def test_ingest_refuses_source_and_batch_together() -> None:
 
 
 def test_ingest_delete_says_what_exists_instead_of_a_ghost_verb() -> None:
-    """Nothing in the CLI removes an ingested page.
-
-    The old body rendered ``lies ingest --delete <slug>``, which exits
-    2. The remedy sentence names the two things that do exist and asks
-    the user which they mean.
-    """
+    """Nothing in the CLI removes an ingested page."""
     from lies.mcp.prompts_impl import ingest_prompt
 
     [msg] = ingest_prompt("--delete entity-pydantic --collection mylib")
@@ -85,11 +68,7 @@ def test_ingest_delete_says_what_exists_instead_of_a_ghost_verb() -> None:
 
 
 def test_ingest_no_source_refusal_carries_the_title_hinting_note() -> None:
-    """``--title <words> --collection <name>`` (no source) refuses; the
-    user typed something that looked like a source after ``--title``,
-    and the diagnosis must point back at ``--title`` rather than at
-    the absent source alone.
-    """
+    """``--title <words> --collection <name>`` (no source) refuses."""
     from lies.mcp.prompts_impl import ingest_prompt
 
     [msg] = ingest_prompt("--title 'looks like a source' --collection mylib")
@@ -100,8 +79,7 @@ def test_ingest_no_source_refusal_carries_the_title_hinting_note() -> None:
 
 
 def test_ingest_path_with_an_apostrophe_is_quoted_not_split() -> None:
-    """``shlex.split`` raised on the apostrophe; the surviving path is
-    quoted so the shell the agent runs in sees one argument."""
+    """``shlex.split`` raised on the apostrophe; the surviving path is quoted so the shell the agent runs in sees one argument."""
     from lies.mcp.prompts_impl import ingest_prompt
 
     [msg] = ingest_prompt("docs/it's.html --collection mylib --slug my-slug")
@@ -119,11 +97,7 @@ def test_ingest_title_value_survives_as_one_argument() -> None:
 
 
 def test_ingest_renders_every_flag_the_cli_accepts() -> None:
-    """A flag the CLI declares and the prompt drops is a silent loss.
-
-    These four were parsed, then thrown away with no note: the value
-    reached neither the command nor the parse-problem sentence.
-    """
+    """A flag the CLI declares and the prompt drops is a silent loss."""
     from lies.mcp.prompts_impl import ingest_prompt
 
     [msg] = ingest_prompt(
@@ -163,9 +137,7 @@ def test_ingest_reports_a_flag_the_cli_does_not_have() -> None:
 
 
 def test_ingest_explains_a_title_that_swallowed_the_source() -> None:
-    """``--title`` takes every word up to the next flag, so a source
-    typed after it is read as part of the title. The refusal then said
-    "no source given" and pointed away from the cause."""
+    """``--title`` takes every word up to the next flag, so a source typed after it is read as part of the title."""
     from lies.mcp.prompts_impl import ingest_prompt
 
     [msg] = ingest_prompt('--title "Pydantic basics" x.md')
@@ -187,13 +159,7 @@ def test_ingest_renders_the_title_note_even_when_a_source_is_present() -> None:
 
 
 def test_ingest_renders_the_negated_boolean_forms() -> None:
-    """``--no-force`` was a silent no-op.
-
-    ``--force/--no-force`` is one Click option with two spellings, and
-    the body read only the positive form, so the negated flag parsed
-    and then vanished — the user said something and the command ran
-    with the opposite. Both spellings render now.
-    """
+    """A ``--no-<flag>`` the CLI declares must be rendered, not silently dropped."""
     from lies.mcp.prompts_impl import ingest_prompt
 
     [msg] = ingest_prompt("docs/a.md --collection mylib --no-force --no-dry-run")
@@ -203,11 +169,7 @@ def test_ingest_renders_the_negated_boolean_forms() -> None:
 
 
 def test_the_delete_remedy_does_not_fire_on_a_path_that_merely_contains_delete() -> None:
-    """``"delete" in tail`` matched ``/home/me/delete-stuff/x.md``.
-
-    A substring test appended the whole deletion lecture to bodies with
-    nothing to do with deletion. The test is on tokens now.
-    """
+    """``"delete" in tail`` matched ``/home/me/delete-stuff/x.md``."""
     from lies.mcp.prompts_impl import ingest_prompt
 
     for tail in (

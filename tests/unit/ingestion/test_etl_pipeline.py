@@ -262,10 +262,7 @@ def test_pipeline_threads_wiki_to_write(wiki: Wiki) -> None:
 
 @pytest.mark.slow
 def test_pipeline_runs_register_stage(wiki: Wiki, monkeypatch: pytest.MonkeyPatch) -> None:
-    """After WRITE, the pipeline calls WikiMemoryService.register_collection.
-    QMD refresh + collection registration + index.md rebuild now happen
-    inside the WRITE stage's post-commit hook (see run_write), not as a
-    separate pipeline stage."""
+    """After WRITE, the pipeline calls WikiMemoryService.register_collection."""
     wiki.data_root.mkdir(parents=True, exist_ok=True)
     (wiki.data_root / "wiki").mkdir(parents=True, exist_ok=True)
     (wiki.data_root / "raw").mkdir(parents=True, exist_ok=True)

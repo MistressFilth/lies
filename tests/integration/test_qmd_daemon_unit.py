@@ -36,11 +36,7 @@ def test_check_scope_match_returns_false_on_mismatch(
 def test_check_scope_match_normalizes_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``Path("wiki")`` and ``Path("./wiki")`` must compare equal after
-    ``Path.resolve``; literal equality would spuriously report a mismatch
-    and force a needless reap when callers pass equivalent-but-not-
-    identical path objects.
-    """
+    """``Path("wiki")`` and ``Path("./wiki")`` must compare equal after ``Path.resolve``."""
     monkeypatch.setattr(qmd_daemon, "SIDECAR_PATH", tmp_path / "mcp.data-dir")
     qmd_daemon.write_sidecar_scope(tmp_path / "wiki")
     # `tmp_path / "." / "wiki"` resolves to the same path as `tmp_path / "wiki"`.
@@ -69,11 +65,7 @@ def test_ensure_qmd_daemon_reaps_on_mismatch(
 def test_reap_qmd_daemon_sends_sigterm_and_waits_for_exit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``_reap_qmd_daemon`` must SIGTERM the daemon and not return until
-    the process is actually gone. Regression test for the post-SIGTERM
-    race where ``_reap_qmd_daemon`` returned before the daemon released
-    its port, allowing the subsequent spawn to inherit the old index.
-    """
+    """``_reap_qmd_daemon`` must SIGTERM the daemon and not return until the process is actually gone."""
     sleeper = tmp_path / "sleeper.py"
     sleeper.write_text("import time; time.sleep(30)\n")
     proc = subprocess.Popen([sys.executable, str(sleeper)])
@@ -100,9 +92,7 @@ def test_reap_qmd_daemon_sends_sigterm_and_waits_for_exit(
 def test_reap_qmd_daemon_escalates_to_sigkill_when_sigterm_ignored(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A daemon that ignores SIGTERM must be killed via SIGKILL after
-    the grace window. Pins the SIGKILL fallback in ``_reap_qmd_daemon``.
-    """
+    """A daemon that ignores SIGTERM must be killed via SIGKILL after the grace window."""
     stubborn = tmp_path / "stubborn.py"
     stubborn.write_text(
         "import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(30)\n"
@@ -134,12 +124,7 @@ def test_reap_qmd_daemon_escalates_to_sigkill_when_sigterm_ignored(
 def test_ensure_qmd_daemon_runs_real_spawn_after_mocked_reap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Mismatch path: reap is mocked (the wait-helper tests above cover
-    the real reap), but spawn invokes an actual subprocess via a stubbed
-    qmd binary. The sidecar is only updated after spawn returns, so the
-    new daemon — the one spawn just started — is the one whose data-dir
-    is recorded. Regression test for the post-SIGTERM race window.
-    """
+    """Mismatch path: reap is mocked (the wait-helper tests above cover the real reap), but spawn invokes an actual subprocess via a stubbed qmd binary."""
     monkeypatch.setattr(qmd_daemon, "SIDECAR_PATH", tmp_path / "mcp.data-dir")
     qmd_daemon.write_sidecar_scope(tmp_path / "stale")
 

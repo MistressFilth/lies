@@ -108,12 +108,7 @@ def test_collections_read_empty_registry_returns_empty(monkeypatch: pytest.Monke
 def test_collections_read_drops_qualifier_prefix_from_tag_list(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """tags with c:/t: prefix are surfaced with the prefix stripped in tag_list.
-
-    Mirrors ask's ``tag_list`` behavior: returns the bare tag, not the
-    qualified atom. Callers that need the qualifier infer it from the
-    collection row.
-    """
+    """Tags with c:/t: prefix are surfaced with the prefix stripped in tag_list."""
     from lies.library.registry import LibraryCollectionMeta
     from lies.mcp.collections import collections_read
 

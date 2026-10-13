@@ -1,11 +1,4 @@
-"""Integration test for ``lies ingest --batch <dir> --slug-prefix X``.
-
-Pins the spec §"Atomic commit envelope": walks a directory, writes one
-mirror per file, atomic-commit envelope returns a single commit.
-
-Spec: ~/code/project-notes/lies/superpowers/specs/2026-09-08-deterministic-ingest-library-design.md
-       L372 / L400 / "Integration suites".
-"""
+"""Integration test for ``lies ingest --batch <dir> --slug-prefix X``."""
 
 from __future__ import annotations
 

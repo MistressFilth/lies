@@ -92,8 +92,7 @@ def test_lies_xdg_runtime_dir_wins_over_xdg_runtime_dir(
 def test_runtime_dir_falls_back_on_permission_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """``XDG_RUNTIME_DIR`` mkdir on an unwritable parent must fall through
-    to ``<state_home>/run`` per the module's best-effort contract."""
+    """``XDG_RUNTIME_DIR`` mkdir on an unwritable parent must fall through to ``<state_home>/run`` per the module's best-effort contract."""
     locked_parent = tmp_path / "no-perm"
     locked_parent.mkdir()
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(locked_parent / "runtime"))
@@ -113,8 +112,7 @@ def test_runtime_dir_falls_back_on_permission_error(
 def test_runtime_dir_falls_back_on_permission_error_for_lies_override(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """``LIES_XDG_RUNTIME_DIR`` mkdir on an unwritable parent must fall
-    through to ``<state_home>/run``."""
+    """``LIES_XDG_RUNTIME_DIR`` mkdir on an unwritable parent must fall through to ``<state_home>/run``."""
     locked_parent = tmp_path / "no-perm"
     locked_parent.mkdir()
     monkeypatch.setenv("LIES_XDG_RUNTIME_DIR", str(locked_parent / "runtime"))

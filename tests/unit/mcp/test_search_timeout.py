@@ -1,11 +1,4 @@
-"""A qmd timeout is not an unreachable daemon, and must not read as one.
-
-A timeout sets ``no_coverage=True`` would let a slow call reach the
-user as "No relevant content found in library." — a false claim
-about the corpus for a query that returns 5.7 s later. These tests
-pin three things: the label, the captured stderr, and the shared
-60 s deadline.
-"""
+"""A qmd timeout is not an unreachable daemon, and must not read as one."""
 
 from __future__ import annotations
 
@@ -88,11 +81,7 @@ def test_a_timeout_is_not_reported_as_unreachable(monkeypatch: pytest.MonkeyPatc
 
 
 def test_a_timeout_keeps_qmds_own_words(monkeypatch: pytest.MonkeyPatch) -> None:
-    """stderr survives the boundary.
-
-    Driven through the real ``qmd_query`` so the assertion is
-    about the production seam, not just the exception class.
-    """
+    """Stderr survives the boundary."""
     from lies.qmd import cli
 
     stderr = b"Expanding query... (1ms)\nEmbedding 35 queries... (2.6s)\nReranking 40 chunks...\n"
@@ -133,13 +122,7 @@ def test_the_librarian_contract_does_not_call_a_timeout_a_coverage_gap() -> None
 def test_a_timeout_is_reported_as_transient_on_the_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A timeout is 'slow', which is the other end of the field from 'nothing there'.
-
-    Split from the clean-miss half: two ``_search_impl`` calls in one test
-    measured 0.14-0.16 s against the 0.15 s budget depending on suite
-    load, so it flapped. Each assertion stands on its own and neither is
-    weakened by the split.
-    """
+    """A timeout is 'slow', which is the other end of the field from 'nothing there'."""
     from lies.mcp import search as search_mod
 
     def boom(*_args: object, **_kwargs: object) -> None:
@@ -223,11 +206,7 @@ def test_the_subprocess_timeout_still_raises_timeout_expired() -> None:
 
 
 def test_every_qmd_query_call_site_shares_one_deadline() -> None:
-    """Two call sites, one number, no second place to change it.
-
-    Both call sites read the one getter; neither carries a literal
-    of its own to drift.
-    """
+    """Two call sites, one number, no second place to change it."""
     from lies.config import get_qmd_query_timeout
     from lies.mcp import grounding, search
 
@@ -248,12 +227,7 @@ def test_the_env_var_moves_both_query_call_sites_at_once(
 
 
 def test_liveness_probes_keep_their_own_short_deadlines() -> None:
-    """A wedged daemon must be reported, not waited on for a minute.
-
-    ``lies qmd status`` and the daemon bootstrap answer "is this
-    alive?" — a slow answer is itself the failure. Inheriting the
-    60s retrieval budget would turn a 5s status into a 60s hang.
-    """
+    """A wedged daemon must be reported, not waited on for a minute."""
     from lies.qmd import daemon as qmd_daemon
     from lies.qmd import lifecycle
 

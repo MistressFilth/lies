@@ -1,12 +1,4 @@
-"""Integration: cross-process recovery of the memory flock.
-
-Real subprocess coverage of reap paths the unit tests can't fake:
-- kill -9 mid-write (test_process_crash_then_reap)
-- wall-clock stale heartbeat with a live PID (test_wall_clock_stale_reaps)
-- os._exit bypassing __exit__ (test_gc_cleanup_on_unexpected_exit)
-
-Targets the v0.10.3 stale-lock recovery spec, Commit G.
-"""
+"""Integration: cross-process recovery of the memory flock."""
 
 from __future__ import annotations
 
@@ -122,13 +114,7 @@ def _cleanup_holder(proc: subprocess.Popen[str] | None) -> None:
 
 
 def test_process_crash_then_reap(tmp_path: Path, fake_wiki: Wiki) -> None:
-    """Spawn a child holding the flock; ``kill -9`` it; reap-then-reacquire succeeds.
-
-    The child writes ``memory.lock.create`` + ``memory.pid`` (its PID) +
-    ``memory.state.json`` (heartbeat) and then sleeps forever. Killing
-    the child with SIGKILL leaves those files on disk and dead-PID,
-    which the reap path treats as a stale holder.
-    """
+    """Spawn a child holding the flock; ``kill -9`` it; reap-then-reacquire succeeds."""
     proc = _spawn_holder(HOLDER_ACQUIRE_AND_SLEEP, tmp_path)
     try:
         _wait_for_ready(proc)
@@ -155,13 +141,7 @@ def test_process_crash_then_reap(tmp_path: Path, fake_wiki: Wiki) -> None:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only; pid liveness check")
 def test_wall_clock_stale_reaps(fake_wiki: Wiki) -> None:
-    """A heartbeat older than ``max_age_s`` is reaped even if the PID is alive.
-
-    Seeds the create-lock + pid file + a heartbeat whose ``started_at``
-    is 10h in the past, then calls ``acquire_create_lock`` with
-    ``pid_alive_fn=lambda _pid: "alive"``. The PID-alive path yields to
-    the wall-clock window, which reaps the stale envelope.
-    """
+    """A heartbeat older than ``max_age_s`` is reaped even if the PID is alive."""
     create_lock = fake_wiki.memory_create_lock_path
     pid_path = fake_wiki.memory_pid_path
     state_json_path = fake_wiki.memory_heartbeat_path
@@ -200,13 +180,7 @@ def test_wall_clock_stale_reaps(fake_wiki: Wiki) -> None:
 
 
 def test_gc_cleanup_on_unexpected_exit(tmp_path: Path, fake_wiki: Wiki) -> None:
-    """A child that exits via ``os._exit`` leaves the lock envelope on disk;
-    the next ``acquire_create_lock`` reaps it and succeeds.
-
-    ``os._exit`` is a C-level exit that bypasses ``__exit__`` (and
-    therefore the ``release_create_lock`` cleanup). Files persist with
-    a dead PID; the parent's acquire treats them as stale and reaps.
-    """
+    """A child that exits via ``os._exit`` leaves the lock envelope on disk; the next ``acquire_create_lock`` reaps it and succeeds."""
     proc = _spawn_holder(HOLDER_ACQUIRE_AND_ABORT, tmp_path)
     try:
         _wait_for_ready(proc)

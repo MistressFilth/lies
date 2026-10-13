@@ -1,8 +1,4 @@
-"""Parametrized tests asserting that every command's --help output contains
-the help= text from the spec at
-~/code/project-notes/lies/superpowers/specs/2026-08-19-cli-help-revamp-design.md
-(Architecture §3 + §4).
-"""
+"""Parametrized assertions that every command and option renders help text."""
 
 from __future__ import annotations
 
@@ -88,16 +84,7 @@ PARAMETRIZE_HELP_SUBSTRINGS = [
 
 @pytest.mark.parametrize("command,expected_substrings", PARAMETRIZE_HELP_SUBSTRINGS)
 def test_every_option_has_help_text(command, expected_substrings):
-    """Every rendered option in --help output must carry a non-empty
-    description text that the operator can read directly.
-
-    Guards against re-introducing a bare `bool = False` or `str | None = None`
-    parameter without an explicit `Annotated[..., typer.Option(..., help=...)]`
-    wrap (see specs/2026-08-20-bare-bool-help-gap-design.md).
-
-    Substring-based assertion: every option's help= text appears in the
-    --help output. Robust against changes to rich's panel-rendering format.
-    """
+    """Every rendered option in --help output must carry a non-empty description text that the operator can read directly."""
     result = runner.invoke(app, command + ["--help"])
     assert result.exit_code == 0, f"command {command} --help failed: {result.output}"
     output = _plain(result.output if isinstance(result.output, str) else "".join(result.output))
@@ -154,14 +141,7 @@ PARAMETRIZE_COMMAND_HELP_SUBSTRINGS = [
 
 @pytest.mark.parametrize("command,expected_substring", PARAMETRIZE_COMMAND_HELP_SUBSTRINGS)
 def test_command_help_contains_help_text(command, expected_substring):
-    """Every command + subcommand's --help output must contain at least
-    one meaningful help= text snippet (the first line of its docstring).
-
-    The `expected_substring` arg is a list of acceptable substrings; the
-    test passes if any of them appears in the --help output. This
-    accommodates multiple semantically equivalent wordings (e.g. a command
-    whose docstring is "Start the daemon" vs. "Start the MCP daemon").
-    """
+    """Every command + subcommand's --help output must contain at least one meaningful help= text snippet (the first line of its docstring)."""
     result = runner.invoke(app, command + ["--help"])
     assert result.exit_code == 0, f"command {command} --help failed: {result.output}"
     output = _plain(result.output if isinstance(result.output, str) else "".join(result.output))

@@ -1,28 +1,4 @@
-"""Integration tests for :mod:`lies.qmd.lifecycle` ``_up`` / ``_down``.
-
-Every test here spawns a real ``qmd mcp --http --daemon`` process
-or stops one. Auto-skipped unless ``INTEGRATION=1`` is set in the
-environment (see ``tests/integration/conftest.py``).
-
-These tests are NOT idempotent w.r.t. the host's actual qmd
-daemon: ``_up`` will refuse to start if ``$XDG_CACHE_HOME/qmd/mcp.pid``
-already references a live PID, and ``_down`` will SIGTERM whatever
-is bound to port 8181. To keep them runnable on a host that
-already runs qmd in the foreground (the typical developer setup),
-every test starts by snapshotting ``status()`` and skips when a
-daemon is already up. Tests redirect ``LIES_XDG_CACHE_HOME`` into
-``tmp_path`` so the pidfile they manipulate is the throwaway one,
-not the host's ``~/.cache/qmd/mcp.pid``.
-
-CI sandbox gate: every test in this module spawns or signals a real
-``qmd mcp --http --daemon`` child via :func:`lies.qmd.lifecycle._up`.
-The CI sandbox installs ``qmd`` and a bind probe on 8181 passes, but
-the daemon process itself fails to start within the 30s bind-poll
-budget. Neither ``shutil.which("qmd")`` nor a port-bind probe
-reliably predicts that failure, so the whole module is skipped
-unconditionally in CI. Tests still exercise the full lifecycle on
-developer hosts where the daemon starts cleanly.
-"""
+"""Integration tests for :mod:`lies.qmd.lifecycle` ``_up`` / ``_down``."""
 
 from __future__ import annotations
 
@@ -74,13 +50,7 @@ def _skip_if_daemon_already_running(monkeypatch: pytest.MonkeyPatch, tmp_path: P
 
 
 def test_up_starts_daemon(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """``_up`` spawns a real daemon; ``status()`` reports it.
-
-    Pins the end-to-end contract: spawn → bind → pidfile write →
-    status reads the same pid qmd itself recorded. Cleans up via
-    ``_down`` in the finally block so a test failure does not leave
-    a daemon running.
-    """
+    """``_up`` spawns a real daemon; ``status()`` reports it."""
     _redirected_cache_home(monkeypatch, tmp_path)
     _skip_if_daemon_already_running(monkeypatch, tmp_path)
 
@@ -116,15 +86,7 @@ def test_down_stops_daemon(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
 def test_serves_query_returns_true_for_healthy_daemon(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """``serves_query`` probes a real ``lex`` query and returns True.
-
-    Pins the contract that ``serves_query`` issues an actual query
-    against the daemon's REST API (not just a TCP connect), so a
-    wedged-but-listening daemon is correctly flagged live. The
-    daemon is spawned + torn down via the real ``_up``/``_down``
-    primitives, not a mock — this is the integration surface Task 3
-    (``recycle``) builds on.
-    """
+    """``serves_query`` probes a real ``lex`` query and returns True."""
     _redirected_cache_home(monkeypatch, tmp_path)
     _skip_if_daemon_already_running(monkeypatch, tmp_path)
 
@@ -141,15 +103,7 @@ def test_serves_query_returns_true_for_healthy_daemon(
 def test_serves_query_returns_false_when_port_dead(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """``serves_query`` returns False without a daemon.
-
-    No ``_up`` and no listener: ``httpx.Client.post`` raises
-    ``ConnectError`` on connect, the ``HTTPError`` arm catches it,
-    and ``serves_query`` returns False. The skip-if-running guard
-    is required because the developer's foreground daemon would
-    otherwise happily answer and the test would silently report
-    True when it should report False.
-    """
+    """``serves_query`` returns False without a daemon."""
     _redirected_cache_home(monkeypatch, tmp_path)
     _skip_if_daemon_already_running(monkeypatch, tmp_path)
 
@@ -157,16 +111,7 @@ def test_serves_query_returns_false_when_port_dead(
 
 
 def test_recycle_brings_wedged_daemon_back(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """recycle() recovers a wedged daemon the live ``_up`` cannot reach.
-
-    Starts a real daemon via ``_up``, SIGKILLs the pidfile-recorded
-    process out-of-band (bypassing ``qmd mcp stop`` -- that is
-    precisely the wedge scenario ``recycle`` exists to recover
-    from), waits for the kernel to release the port, then calls
-    ``recycle`` and verifies the new daemon is up. Cleans up via
-    ``_down`` in a ``finally`` so a failing assertion does not
-    leave a daemon running.
-    """
+    """Recycle() recovers a wedged daemon the live ``_up`` cannot reach."""
     import os
 
     _redirected_cache_home(monkeypatch, tmp_path)
@@ -199,16 +144,7 @@ def test_recycle_brings_wedged_daemon_back(monkeypatch: pytest.MonkeyPatch, tmp_
 def test_recycle_raises_when_daemon_never_serves(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """recycle() raises ``RuntimeError`` when no daemon can serve within budget.
-
-    Holds port 8181 with a raw socket so the fresh ``_up`` cannot
-    bind a working daemon and ``recycle``'s poll loop cannot get a
-    sane liveness signal. ``ready_timeout=2`` keeps the test bounded;
-    the blocker is released in ``finally`` so the next test does not
-    see a port conflict. The skip-if-running guard runs BEFORE the
-    bind: we want to skip if the host's real daemon is already on
-    8181, not skip after we've claimed the port for our blocker.
-    """
+    """Recycle() raises ``RuntimeError`` when no daemon can serve within budget."""
     import socket
 
     _redirected_cache_home(monkeypatch, tmp_path)

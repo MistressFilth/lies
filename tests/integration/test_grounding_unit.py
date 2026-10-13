@@ -213,25 +213,7 @@ def test_ground_returns_empty_digest_on_librarian_exception(monkeypatch) -> None
 def test_ground_dispatch_failure_logs_and_stays_off_logfire(
     monkeypatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A dispatch failure is logged, and logfire never sees a warning.
-
-    Regression for the ``LogfireNotConfiguredWarning`` noise on the
-    exception path: the failure must not go through ``logfire.warning``
-    at all, or a non-configured logfire environment emits a
-    ``LogfireNotConfiguredWarning`` on every ``ground()`` call.
-
-    The surface changed from a stdlib ``UserWarning`` to an ``ERROR``
-    log line, and both halves matter. ``warnings.warn`` is filtered
-    once per location by default, so a daemon that fails on every
-    call went silent after the first one — the operator saw it once
-    and then had nothing. A log line repeats. What the test pins is
-    that the failure is *visible* and that it does not arrive via
-    logfire.
-
-    The flag changed with it: a dispatch that raised used to report
-    ``no_coverage=True``, which claims the corpus is empty because a
-    process failed.
-    """
+    """A dispatch failure is logged, and logfire never sees a warning."""
     from lies.library import registry as registry_mod
     from lies.mcp import grounding
 
@@ -293,14 +275,7 @@ def test_ground_clamps_top_k_to_bounds(monkeypatch) -> None:
 
 
 def test_ground_uses_first_prose_span_per_excerpt(monkeypatch) -> None:
-    """First prose span wins; snippet truncated to ≤200 chars.
-
-    Library-mode rewrite migration: the unscoped path bypasses the
-    F18 librarian and dispatches via ``_fanout_unscoped``. Mock the
-    fan-out helper at the import seam so the citation-building loop
-    sees populated ``PageExcerpt`` rows with the same shape the
-    real fan-out would return on a successful scan.
-    """
+    """First prose span wins; snippet truncated to ≤200 chars."""
     from lies.agents.librarian import PageExcerpt
     from lies.markdown_spans import Span
     from lies.mcp import grounding
@@ -327,13 +302,7 @@ def test_ground_uses_first_prose_span_per_excerpt(monkeypatch) -> None:
 
 
 def test_ground_skips_excerpts_with_only_code_fences(monkeypatch) -> None:
-    """Excerpt with no prose spans → skipped from citations.
-
-    Library-mode rewrite migration: the unscoped path bypasses the
-    F18 librarian and dispatches via ``_fanout_unscoped``. Mock the
-    fan-out helper directly so the citation-building loop sees the
-    mixed code-only + prose-only excerpts.
-    """
+    """Excerpt with no prose spans → skipped from citations."""
     from lies.agents.librarian import PageExcerpt
     from lies.markdown_spans import Span
     from lies.mcp import grounding
@@ -361,13 +330,7 @@ def test_ground_skips_excerpts_with_only_code_fences(monkeypatch) -> None:
 
 
 def test_ground_no_coverage_true_when_librarian_reports_it(monkeypatch) -> None:
-    """Librarian reports no_coverage=True → digest carries no_coverage=True.
-
-    Pins F18 Task 2: the digest's ``no_coverage`` field is read
-    directly from ``LibrarianOutput.no_coverage`` rather than from a
-    catalog probe. The librarian is the source of truth for the
-    scope-miss signal.
-    """
+    """Librarian reports no_coverage=True → digest carries no_coverage=True."""
     from lies.agents.librarian import LibrarianOutput
     from lies.mcp import grounding
 
@@ -395,19 +358,7 @@ def test_ground_no_coverage_true_when_librarian_reports_it(monkeypatch) -> None:
 
 
 def test_ground_no_coverage_false_when_librarian_returns_hits(monkeypatch) -> None:
-    """Librarian returns hits (no_coverage=False) → digest no_coverage=False.
-
-    Pins F18 Task 2: a successful query is never a no-coverage
-    signal, regardless of corpus size. The librarian's
-    ``no_coverage=False`` flows through unchanged.
-
-    Library-mode rewrite migration: the unscoped fan-out computes
-    ``no_coverage = len(excerpts) == 0`` so non-empty hits
-    propagate the same ``False`` value through to the digest. Mock
-    the fan-out helper directly with a populated ``PageExcerpt``
-    list so the digest sees a non-empty result on the unscoped
-    path.
-    """
+    """Librarian returns hits (no_coverage=False) → digest no_coverage=False."""
     from lies.agents.librarian import PageExcerpt
     from lies.markdown_spans import Span
     from lies.mcp import grounding
@@ -425,13 +376,7 @@ def test_ground_no_coverage_false_when_librarian_returns_hits(monkeypatch) -> No
 
 
 def test_ground_dispatch_failure_still_yields_no_coverage_true(monkeypatch) -> None:
-    """Dispatch exception → digest no_coverage=True (fail-closed on the ground path).
-
-    Pins F18 Task 2: the no-coverage signal still fires when the
-    librarian itself raises — the dispatch-exception branch wraps the
-    bundle read, so the same ``no_coverage=True`` envelope is
-    preserved.
-    """
+    """Dispatch exception → digest no_coverage=True (fail-closed on the ground path)."""
     from lies.mcp import grounding
 
     class _BoomAgent:
@@ -449,14 +394,7 @@ def test_ground_dispatch_failure_still_yields_no_coverage_true(monkeypatch) -> N
 
 
 def test_archivist_digest_searched_scope_default_empty() -> None:
-    """``ArchivistDigest.searched_scope`` defaults to ``[]`` for back-compat.
-
-    Pin for the Bug C fix: the field is added at the END of the
-    dataclass so existing positional constructions remain valid.
-    Without the default, every pre-fix call site would break. Also
-    pins the frozen-dataclass contract — assigning to the field
-    raises ``FrozenInstanceError``.
-    """
+    """``ArchivistDigest.searched_scope`` defaults to ``[]`` for back-compat."""
     digest = ArchivistDigest(
         question="q",
         tag_expr=None,
@@ -471,16 +409,7 @@ def test_archivist_digest_searched_scope_default_empty() -> None:
 
 
 def test_ground_searched_scope_untagged_returns_all_collections(monkeypatch) -> None:
-    """Untagged ``ground()`` → ``searched_scope`` = every registered collection.
-
-    Pins Bug C: the digest's ``searched_scope`` mirrors the F15
-    envelope that ``Orchestrator.run_query`` writes onto
-    ``SynthesizedAnswer.searched_scope``. Untagged scope = every
-    collection the library knows about, sorted. Tested by patching
-    the library registry to a known set so the assertion sees
-    exactly the names we expect, regardless of the host's live
-    library state.
-    """
+    """Untagged ``ground()`` → ``searched_scope`` = every registered collection."""
     from lies.library import registry as registry_mod
     from lies.mcp import grounding
 
@@ -534,13 +463,7 @@ def test_ground_searched_scope_untagged_returns_all_collections(monkeypatch) -> 
 
 
 def test_ground_searched_scope_tagged_returns_matching_only(monkeypatch) -> None:
-    """Tagged ``ground(tag_expr="opencode")`` → ``searched_scope`` = just that collection.
-
-    Pins Bug C: filtered scope = the subset whose ``atom_matches``
-    is true for the resolved include AST, sorted. The result mirrors
-    ``Orchestrator.run_query``'s contract — tagged ground returns a
-    narrower scope than untagged ground.
-    """
+    """Tagged ``ground(tag_expr="opencode")`` → ``searched_scope`` = just that collection."""
     from lies.agents.librarian import LibrarianOutput
     from lies.library import registry as registry_mod
     from lies.library.registry import LibraryCollectionMeta
@@ -594,18 +517,7 @@ def test_ground_searched_scope_tagged_returns_matching_only(monkeypatch) -> None
 
 
 def test_ground_searched_scope_populated_on_librarian_exception(monkeypatch) -> None:
-    """Librarian dispatch failure → ``transient``, and the scope is still reported.
-
-    Pins the fail-soft posture: ``searched_scope`` is computed once
-    (before the dispatch) and threaded through every return path.
-
-    The flag changed. A dispatch that raised used to report
-    ``no_coverage=True``, which told the caller the corpus had nothing
-    — a claim about the index produced by a failure of the process. It
-    is now ``transient=True, no_coverage=False``. The scope is
-    unchanged and still reported, because that part was always a
-    statement about what was attempted.
-    """
+    """Librarian dispatch failure → ``transient``, and the scope is still reported."""
     from lies.library import registry as registry_mod
     from lies.mcp import grounding
 
@@ -632,16 +544,7 @@ def test_ground_searched_scope_populated_on_librarian_exception(monkeypatch) -> 
 
 
 def test_ground_library_collection_names_cached_across_calls(monkeypatch, tmp_path: Path) -> None:
-    """Regression for Fix 5: library_collection_names memoization.
-
-    Pins that the F15 tag-filter dispatch path in ground() consults
-    the registry's lru_cache rather than re-traversing the library's
-    collections_root via iterdir on every call. Read
-    ``cache_info()`` after a sequence of calls: ``misses`` counts
-    how many times the underlying body actually ran (vs the
-    ``call_count`` if we had replaced the function outright, which
-    would lose the lru_cache wrapping).
-    """
+    """``library_collection_names`` is memoized across calls."""
     from lies.library import registry
     from lies.mcp import grounding
 
@@ -690,17 +593,7 @@ def test_ground_library_collection_names_cached_across_calls(monkeypatch, tmp_pa
 
 
 def test_collect_available_tags_mcp_includes_library_collections(monkeypatch) -> None:
-    """Library-collection names must appear in the tag-validator's
-    available set with the ``c:`` qualifier prefix.
-
-    Regression for Fix 3 (Task 3 brief): the F15 tag-expression
-    validator on the MCP ``query`` / ``answer`` tool path needs to
-    know which ``c:``-prefixed atoms are addressable so a
-    ``c:opencode`` filter does not raise ``TagExprUnknown``. The MCP
-    tool path is distinct from the ``ground`` archivist's
-    ``grounding.py`` path; the helper lives at
-    ``lies.mcp.server._collect_available_tags_mcp``.
-    """
+    """Library-collection names must appear in the tag-validator's available set with the ``c:`` qualifier prefix."""
     from lies.mcp.server import _collect_available_tags_mcp
 
     monkeypatch.setattr(
@@ -713,18 +606,7 @@ def test_collect_available_tags_mcp_includes_library_collections(monkeypatch) ->
 
 
 def test_collect_available_tags_mcp_includes_library_collection_tags(monkeypatch) -> None:
-    """Each ``LibraryCollectionConfig.tags`` entry must appear in the
-    tag-validator's available set with the ``t:`` qualifier prefix.
-
-    Regression for Task 8: pre-fix the validator only enumerated
-    collection NAMES (with the ``c:`` prefix). The ``tags`` field on
-    each collection's ``config.yaml`` (e.g. ``mermaid`` carrying
-    ``[syntax, docs, mermaid]``) was invisible to the validator, so
-    a ``t:mermaid`` filter against a library-collection tag raised
-    ``TagExprUnknown``. The fix unions each registered collection's
-    ``tags`` (via :func:`library_collection_tags`) into the available
-    set with the ``t:`` prefix.
-    """
+    """Each ``LibraryCollectionConfig.tags`` entry must appear in the tag-validator's available set with the ``t:`` qualifier prefix."""
     from lies.mcp.server import _collect_available_tags_mcp
 
     monkeypatch.setattr(
@@ -739,22 +621,7 @@ def test_collect_available_tags_mcp_includes_library_collection_tags(monkeypatch
 
 
 def test_collect_available_tags_mcp_accepts_bare_tag_names(monkeypatch) -> None:
-    """Bare tag names must validate too — F15 treats ``+tag`` as the
-    implicit-t alias for ``+t:tag``.
-
-    Regression for the v0.37.9 fix: pre-fix
-    :func:`_collect_available_tags_mcp` only registered each
-    ``LibraryCollectionConfig.tags`` entry with the explicit ``t:``
-    qualifier prefix. A bare ``+claude`` expression — which is the
-    canonical F15 include form against a library-collection tag —
-    parses to ``Include("claude", qualifier=None)``, and the resolver
-    checks ``expr.tag in available`` directly, so the bare string
-    had to be present in the set or ``TagExprUnknown`` fired at the
-    MCP ``query`` / ``answer`` / ``ground`` boundary even though
-    ``claude`` was a real tag on multiple collections. The fix adds
-    each tag BARE alongside the ``t:`` form so the user's
-    user-confirmed semantic (``bare +tag == +t:tag``) validates.
-    """
+    """Bare tag names must validate too — F15 treats ``+tag`` as the implicit-t alias for ``+t:tag``."""
     from lies.mcp.server import _collect_available_tags_mcp
 
     monkeypatch.setattr(
@@ -956,23 +823,7 @@ def _registered_tool_names(agent: object) -> list[str]:
 
 
 def test_register_librarian_tools_attaches_three_tools(empty_wiki: object) -> None:
-    """Wiring attaches ``collections_read`` / ``search`` / ``read``.
-
-    Pins the canonical wiring contract: ``register_librarian_tools``
-    is the single source of truth for the v0.40 4-step trio, used by
-    the MCP ``ask`` orchestrator path (which delegates to
-    :func:`lies.mcp.synth.librarian_agent_run`). The v0.40 surface
-    retires the wiki-shaped trio (``wiki_search`` / ``wiki_read`` /
-    ``wiki_catalog``) in favor of the stateless MCP-backed trio
-    (``collections_read`` / ``search`` / ``read``) wired against the
-    library corpus. The pre-v0.40 surface left the orchestrator as
-    the only caller, so any non-orchestrator dispatch (notably the
-    F19 ``ground()`` path) reached the LLM with no tools at all.
-
-    Uses ``"test"`` as the model id so the bare agent factory does
-    not try to instantiate the Anthropic provider — the test only
-    inspects the tool registry, never runs ``run_sync``.
-    """
+    """Wiring attaches ``collections_read`` / ``search`` / ``read``."""
     from lies.agents.librarian import librarian_agent, register_librarian_tools
     from lies.memory.service import WikiMemoryService
 
@@ -996,38 +847,7 @@ def test_ground_wires_librarian_tools_before_run_sync(
     monkeypatch: pytest.MonkeyPatch,
     empty_wiki: object,
 ) -> None:
-    """Regression: ``ground()`` must wire tools before dispatching.
-
-    Pins Fix Critical: ``src/lies/mcp/grounding.py:228`` called
-    ``librarian_agent().run_sync(...)`` directly with no wiring. The
-    bare factory emits ``Agent(tools=[])`` so the LLM received an
-    agent with no tools and the 4-step contract (classify → search
-    → read → return) could not run. ``ground()`` must call
-    :func:`register_librarian_tools` against the active wiki's
-    :class:`WikiMemoryService` BEFORE ``run_sync``.
-
-    The spy records every call to ``register_librarian_tools``;
-    the test asserts it was called once with non-null wiki /
-    memory_service kwargs and that the agent passed to the spy is
-    the same instance ``run_sync`` saw (so the wiring landed on
-    the dispatched agent).
-
-    Library-mode rewrite migration: unscoped ``ground()`` bypasses
-    the F18 librarian entirely (Task 1 brick-wall fix), so wiring
-    never fires on the unscoped path. Force the librarian path by
-    passing a ``tag_expr`` and seeding the matching library
-    collection so the F15 tag-filter dispatch validates; the spy
-    then records the canonical wiring call against the active
-    wiki's :class:`WikiMemoryService`.
-
-    Library-mode rewrite migration (this revision): the tagged
-    fast-path fires whenever ``_collections_matching`` returns a
-    non-empty scope, so the legacy wiring block no longer runs on a
-    vanilla ``tag_expr="wiki"`` against a seeded wiki collection.
-    Drop the matched collection from scope via ``exclude_tags=...``;
-    the now-empty scope forces the legacy branch and the wiring
-    contract is observable again.
-    """
+    """``ground()`` must wire tools before dispatching."""
     from lies import xdg
     from lies.agents import librarian as librarian_mod
     from lies.constants import LIES_DATA_SUBDIR
@@ -1136,24 +956,7 @@ def test_ground_wires_librarian_tools_before_run_sync(
 
 
 def test_ground_threads_source_kind_from_librarian_output(monkeypatch) -> None:
-    """ground() copies source_kind from each PageExcerpt into CitationSnippet.
-
-    Pins Task 2 of dual-source-routing: the per-excerpt ``source_kind``
-    flag (``"library"`` vs ``"wiki"``) must propagate through to
-    the :class:`CitationSnippet` emitted by :func:`ground` so
-    downstream rendering can distinguish primary-source hits from
-    wiki-only hits. The test fakes the dispatch (librarian OR
-    fan-out, both surface the same ``source_kind`` contract) and
-    feeds two excerpts with distinct values; assertions on the
-    resulting ``digest.citations`` pin the propagation.
-
-    Library-mode rewrite migration: unscoped ``ground()`` dispatches
-    via ``_fanout_unscoped`` rather than the F18 librarian. Mock
-    the fan-out helper directly with the same two-excerpt fixture;
-    the citation-building loop reads ``getattr(excerpt,
-    "source_kind", "library")`` so the propagation contract is
-    unchanged across the dispatch boundary.
-    """
+    """Ground() copies source_kind from each PageExcerpt into CitationSnippet."""
     from lies.markdown_spans import Span
     from lies.mcp import grounding
 
@@ -1206,32 +1009,7 @@ def test_ground_threads_source_kind_from_librarian_output(monkeypatch) -> None:
 
 
 def test_ground_tagged_dispatches_via_qmd_fanout_not_librarian(monkeypatch) -> None:
-    """Tagged ``ground(tag_expr="c:switchyard")`` hits the fast-path, not the librarian.
-
-    Regression for the session-2505630b brick wall: the scoped
-    ``ground()`` path previously took the F18 librarian round-trip
-    (which dispatched against an empty wiki and timed out at ~197s
-    with ``no_coverage=True`` and zero citations). The fix adds a
-    tagged fast-path that fans out directly to qmd across the
-    resolved collection set. The test mocks ``qmd_query`` so the
-    call surface is the wire path the production code actually
-    walks; the assertion verifies (a) the F18 librarian agent is
-    NOT invoked, and (b) qmd_query is dispatched with the resolved
-    collection filter — NOT against the full library.
-
-    Library-mode rewrite tagged fast-path: ``c:switchyard`` resolves
-    to one library collection (``switchyard``), so
-    ``searched_scope_list`` is non-empty and the gate fires.
-
-    Note on citations: this test stubs ``qmd_query`` directly, and
-    the wire-shape contract there returns ``{path, title, score}``
-    rows without spans. The citation-building loop in
-    :func:`ground` skips excerpts whose ``spans`` list is empty
-    (no prose body to trim), so this test asserts the fast-path
-    dispatch contract, not the citation count. Citation production
-    is covered by :func:`test_ground_tagged_fast_path_under_budget`
-    below.
-    """
+    """Tagged ``ground(tag_expr="c:switchyard")`` hits the fast-path, not the librarian."""
     from lies.mcp import grounding
 
     qmd_calls: list[dict] = []
@@ -1345,16 +1123,7 @@ def test_ground_tagged_dispatches_via_qmd_fanout_not_librarian(monkeypatch) -> N
 
 
 def test_ground_tagged_fast_path_under_budget(monkeypatch) -> None:
-    """Tagged ``ground()`` fast-path completes in well under 15s with citations.
-
-    Regression for the session-2505630b 197s timeout: the post-fix
-    tagged fast-path must run in tens of milliseconds when the qmd
-    fan-out is fully mocked, AND the citation-building loop picks
-    up the populated spans the mock provides. The 0.15s budget is
-    generous — the real path on a cached cold-start is <50ms; the
-    budget guards against regression to the LLM round-trip path
-    while leaving headroom for slow CI hosts.
-    """
+    """Tagged ``ground()`` fast-path completes in well under 15s with citations."""
     import time
 
     from lies.agents.librarian import PageExcerpt
@@ -1400,21 +1169,7 @@ def test_ground_tagged_fast_path_under_budget(monkeypatch) -> None:
 def test_ground_tagged_dispatch_exception_is_transient(
     monkeypatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Tagged fast-path dispatch exception → ``transient``, and a logged failure.
-
-    Pins the fail-soft posture on the tagged fast-path: when
-    ``_query_tagged_collections`` raises (qmd daemon offline,
-    timeout, etc.), ``ground()`` does not raise and does not crash.
-
-    Two things changed and both are the point. The flag: it was
-    ``no_coverage=True``, a claim about the corpus produced by a
-    failure of the process; it is now ``transient=True,
-    no_coverage=False``. The surface: the failure was surfaced
-    through stdlib ``warnings``, which Python filters once per
-    location by default, so a persistently failing daemon went quiet
-    after the first occurrence. It is now an ``ERROR`` log line,
-    which repeats.
-    """
+    """Tagged fast-path dispatch exception → ``transient``, and a logged failure."""
     from lies.library import registry as registry_mod
     from lies.library.registry import LibraryCollectionMeta
     from lies.mcp import grounding
@@ -1464,31 +1219,7 @@ def test_ground_tagged_dispatch_exception_is_transient(
 
 
 def test_ground_tagged_zero_matches_falls_through_to_librarian(monkeypatch) -> None:
-    """Tagged ``ground()`` with zero resolved collections falls through to legacy path.
-
-    Edge-case fallback: when the library is populated but the
-    resolved AST matches zero library collections, the tagged
-    fast-path gate (``searched_scope_list`` non-empty) does NOT fire.
-    The legacy F18 librarian path runs as the historical fallback —
-    preserves behavior for ``tag_expr="ghost"`` style queries
-    against a collection that no longer exists.
-
-    The test sets up the scenario by patching the library registry
-    so that ``library_collection_tags`` returns ``{"ghost"}`` (so the
-    F15 validator's available-set recognizes ``+ghost`` as
-    addressable), but ``library_collection_metas`` returns only
-    ``switchyard`` (with no ``ghost`` tag) — the matching walker
-    resolves to an empty set, ``searched_scope_list`` is empty, and
-    the fast-path gate stays closed. The legacy librarian path runs
-    as the historical fallback.
-
-    Note: a fully-empty library is a different failure mode (the F15
-    validator throws ``ArchivistCoverageError`` on the first unknown
-    atom). The "library empty" surface from the spec brief reduces
-    to this case in practice — the legacy path's
-    ``searched_scope_list`` branch covers both uninitialized-library
-    and zero-match scenarios.
-    """
+    """Tagged ``ground()`` with zero resolved collections falls through to legacy path."""
     from lies.library import registry as registry_mod
     from lies.library.registry import LibraryCollectionMeta
     from lies.mcp import grounding
@@ -1577,23 +1308,7 @@ def test_ground_tagged_zero_matches_falls_through_to_librarian(monkeypatch) -> N
 def test_ground_tagged_with_resolved_collection_calls_fanout_only(
     monkeypatch,
 ) -> None:
-    """Tagged fast-path restricts the qmd dispatch to resolved collections only.
-
-    When ``tag_expr`` resolves to two library collections (e.g.
-    ``c:switchyard|c:opencode``), ``_fanout_collections`` dispatches
-    against each collection separately via the per-collection
-    ``collection_filter`` — NOT against every registered collection.
-    The test mocks ``qmd_query`` to record every call's
-    ``collection_filter`` and asserts the union of filters equals
-    exactly the resolved set.
-
-    The mocked qmd rows carry spans-like payloads directly so the
-    downstream citation-building loop picks them up. Since the
-    mocked ``qmd_query`` returns raw dicts (not ``Span`` objects),
-    this test asserts the dispatch contract (filter sets) — the
-    citation-count check is covered by
-    :func:`test_ground_tagged_fast_path_under_budget`.
-    """
+    """Tagged fast-path restricts the qmd dispatch to resolved collections only."""
     from lies.library import registry as registry_mod
     from lies.library.registry import LibraryCollectionMeta
 

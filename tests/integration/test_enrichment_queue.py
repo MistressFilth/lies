@@ -125,13 +125,7 @@ def test_queue_is_per_orchestrator_instance(wiki: Wiki) -> None:
 
 
 def test_queued_item_becomes_noop_on_reenrichment(wiki: Wiki) -> None:
-    """A queued item that produces noop on the next drain drops silently.
-
-    Scenario: a plan is queued for retry. On the next turn, the
-    enricher produces a noop (MemoryPlan with empty operations). The
-    drain should drop the item, leave the queue empty, and emit no
-    errors or deferred lines.
-    """
+    """A queued item that produces noop on the next drain drops silently."""
     from lies.memory.models import MemoryPlan
 
     orch = Orchestrator(wiki=wiki, models=models_for_tests(TestModel()))

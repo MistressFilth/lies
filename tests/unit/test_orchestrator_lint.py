@@ -151,9 +151,7 @@ def test_run_lint_apply_surfaces_errors(orch: Orchestrator) -> None:
 
 
 def test_build_lint_report_orphans_are_safe_to_fix(orch: Orchestrator) -> None:
-    """The deterministic host-side shell must mark orphan findings
-    safe_to_fix=True so the repair agent's HARD RULE permits the
-    corresponding UpdateIndex op."""
+    """The deterministic host-side shell must mark orphan findings safe_to_fix=True so the repair agent's HARD RULE permits the corresponding UpdateIndex op."""
     from lies.orchestrator import _build_lint_report
 
     # Seed an orphan page (no inbound links).
@@ -178,9 +176,7 @@ def test_build_lint_report_orphans_are_safe_to_fix(orch: Orchestrator) -> None:
 
 @pytest.mark.slow
 def test_run_lint_apply_passes_findings_to_repair_agent(orch: Orchestrator) -> None:
-    """The LintReport's safe_to_fix flags flow through to the repair agent
-    via RepairAgentDeps. Orphans are safe_to_fix=True; any other finding
-    (if added by the deterministic shell in future) is False by default."""
+    """The LintReport's safe_to_fix flags flow through to the repair agent via RepairAgentDeps."""
     from lies.orchestrator import _build_lint_report
 
     # Seed an orphan so the deterministic shell produces a finding.
@@ -371,8 +367,7 @@ def _seed_orphan(orch: Orchestrator) -> None:
 
 
 def test_run_lint_check_filters_to_one_category(orch: Orchestrator) -> None:
-    """``--check`` on the lint prompt is only meaningful if the tool honours
-    it: a documented flag that the tool ignores is worse than no flag."""
+    """``--check`` on the lint prompt is only meaningful if the tool honours it: a documented flag that the tool ignores is worse than no flag."""
     from lies.agents.linter import LintFinding, LintSeverity
 
     _seed_orphan(orch)
@@ -408,14 +403,7 @@ def test_run_lint_check_filters_to_one_category(orch: Orchestrator) -> None:
 
 
 def test_run_lint_check_does_not_narrow_the_log_entry(orch: Orchestrator) -> None:
-    """The audit trail counts the merge, not the narrowed view.
-
-    The log entry is what a later reader scans to ask "was this corpus
-    healthy?". A title built from the filtered report read as "2
-    findings" for a run whose merge carried twenty across five
-    categories, which contradicts the docstring's promise that
-    ``check`` narrows the return value only.
-    """
+    """The audit trail counts the merge, not the narrowed view."""
     from lies.agents.linter import LintFinding, LintSeverity
 
     _seed_orphan(orch)
@@ -461,13 +449,7 @@ def test_run_lint_check_does_not_narrow_the_log_entry(orch: Orchestrator) -> Non
 
 
 def test_run_lint_renders_the_markdown_once_when_unscoped(orch: Orchestrator) -> None:
-    """An unscoped lint rendered the same body twice and threw one away.
-
-    ``run_lint`` called ``render(unfiltered_report)`` for the persisted
-    artifact and then ``render(merged_report)`` for the return value.
-    With no ``check`` those are the same object, so every plain
-    ``lies lint`` — the common path — formatted the whole report twice.
-    """
+    """An unscoped lint renders the report body exactly once."""
     from lies.agents.linter import LintReport
 
     calls: list[int] = []
@@ -502,8 +484,7 @@ def test_run_lint_renders_the_markdown_once_when_unscoped(orch: Orchestrator) ->
 
 
 def test_run_lint_check_accepts_the_plural_spelling(orch: Orchestrator) -> None:
-    """``--check orphans`` reads naturally in a report; the finding says
-    ``orphan``. Both must select the same check."""
+    """``--check orphans`` reads naturally in a report; the finding says ``orphan``."""
     _seed_orphan(orch)
     with (
         mock.patch.object(
@@ -518,8 +499,7 @@ def test_run_lint_check_accepts_the_plural_spelling(orch: Orchestrator) -> None:
 
 
 def test_run_lint_check_that_matches_nothing_lists_the_vocabulary(orch: Orchestrator) -> None:
-    """An unmatched ``check`` must say so and show the real category list,
-    rather than rendering an empty report that reads like a clean wiki."""
+    """An unmatched ``check`` must say so and show the real category list, rather than rendering an empty report that reads like a clean wiki."""
     _seed_orphan(orch)
     with (
         mock.patch.object(
@@ -534,8 +514,7 @@ def test_run_lint_check_that_matches_nothing_lists_the_vocabulary(orch: Orchestr
 
 
 def test_run_lint_check_scopes_the_repair(orch: Orchestrator) -> None:
-    """``--check <cat> --fix`` must repair that category only, so the
-    repair agent never sees a finding outside the requested scope."""
+    """``--check <cat> --fix`` must repair that category only, so the repair agent never sees a finding outside the requested scope."""
     from lies.agents.linter import LintFinding, LintSeverity
     from lies.agents.repair_models import RepairPlan
 
@@ -578,9 +557,7 @@ def test_run_lint_blank_check_is_ignored(orch: Orchestrator) -> None:
 
 
 def test_run_lint_check_does_not_narrow_the_persisted_artifact(orch: Orchestrator) -> None:
-    """A scoped read is a read. The artifact behind ``wiki://lint-report``
-    used to receive the *filtered* body, so one ``--check`` query
-    silently shrank the report for every later reader."""
+    """A scoped read is a read."""
     from lies.agents.linter import LintFinding, LintSeverity
 
     _seed_orphan(orch)
@@ -610,10 +587,7 @@ def test_run_lint_check_does_not_narrow_the_persisted_artifact(orch: Orchestrato
 
 
 def test_filtered_lint_report_does_not_carry_the_unfiltered_markdown() -> None:
-    """``LintReport.report_markdown`` is a public field. Copying it onto
-    a narrowed report leaves the full body sitting next to filtered
-    ``findings``, and any consumer rendering the markdown directly
-    ignores the filter entirely."""
+    """``LintReport.report_markdown`` is a public field."""
     from lies.agents.linter import LintFinding, LintSeverity
     from lies.orchestrator import _filter_lint_report
 
@@ -641,11 +615,7 @@ def test_filtered_lint_report_does_not_carry_the_unfiltered_markdown() -> None:
 
 
 def test_check_trailer_counts_against_the_merged_total_not_the_sum(orch: Orchestrator) -> None:
-    """``merge_lint_reports`` dedups on ``(category, pages, message)``, so
-    ``len(shell) + len(llm)`` overstated the denominator whenever the two
-    sources overlapped -- which they do on every mechanical category.
-    The trailer read "1 of 3" where only 2 findings existed.
-    """
+    """``merge_lint_reports`` dedups on ``(category, pages, message)``."""
     from lies.agents.linter import LintFinding, LintSeverity
 
     _seed_orphan(orch)

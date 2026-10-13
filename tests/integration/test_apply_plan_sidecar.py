@@ -163,11 +163,7 @@ def test_apply_plan_writes_sidecar_line_on_commit(wiki: Wiki) -> None:
 
 
 def test_apply_plan_appends_after_qmd_refresh(wiki: Wiki) -> None:
-    """Sidecar append ordering: commit -> sidecar -> qmd.
-
-    Patches qmd refresh to fail and verifies the sidecar line still lands
-    AND the receipt carries the qmd error (not sidecar).
-    """
+    """Sidecar append ordering: commit -> sidecar -> qmd."""
     svc = WikiMemoryService(wiki=wiki)
     svc.register_evidence({"ref-1"})
     plan = _make_plan()
@@ -200,14 +196,7 @@ def test_apply_plan_surfaces_sidecar_failure_in_receipt(wiki: Wiki) -> None:
 def test_apply_plan_two_distinct_commits_produce_two_sidecar_lines(
     wiki: Wiki,
 ) -> None:
-    """Distinct commits land distinct sidecar lines; SHA-dedup does not collapse them.
-
-    Two ``apply_plan`` calls on the same wiki with different paths get
-    distinct synthetic SHAs from the autouse mock, so the sidecar
-    keeps both rows. This pins the SHA-dedup invariant at zero
-    subprocess cost — ``atomic_commit``, ``_snapshot_working_tree``,
-    and ``_discard_snapshot`` are all stubbed.
-    """
+    """Distinct commits land distinct sidecar lines; SHA-dedup does not collapse them."""
     svc = WikiMemoryService(wiki=wiki)
     svc.register_evidence({"ref-1"})
     svc.apply_plan(_make_plan())
@@ -234,14 +223,7 @@ def test_apply_plan_two_distinct_commits_produce_two_sidecar_lines(
 
 
 def test_apply_plan_passes_evidence_count_to_sidecar_record(wiki: Wiki) -> None:
-    """Live sidecar records must carry the same evidence_count as the commit body.
-
-    Regression: ``apply_plan`` used to compute ``evidence_count`` for the
-    commit message but call ``append_receipt(..., commit_sha)`` without the
-    kwarg, leaving ``evidence_count: 0`` in every JSONL row. ``lies memory
-    reconcile`` reads the correct value from the commit body; live records
-    and reconciled records disagreed on the same data.
-    """
+    """Live sidecar records must carry the same evidence_count as the commit body."""
     svc = WikiMemoryService(wiki=wiki)
     svc.register_evidence({"ref-1", "ref-2", "ref-3"})
     plan = MemoryPlan(
@@ -267,14 +249,7 @@ def test_apply_plan_touches_f14_last_write_marker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``WikiMemoryService.apply_plan`` must touch <XDG_CACHE_HOME>/qmd/last-write-marker.
-
-    F14 sentinel: the qmd daemon's staleness check reads this marker to
-    decide whether to reap+respawn. The wiki-side envelope must touch it
-    on every successful commit so any wiki write (not just library
-    writes) bumps the daemon-staleness freshness. The library-side
-    coverage lives in ``tests/unit/library/test_writer.py``.
-    """
+    """``WikiMemoryService.apply_plan`` must touch <XDG_CACHE_HOME>/qmd/last-write-marker."""
     # Build a fresh wiki + cache root and stub the same external services
     # the autouse fixture already mocks. We re-mock explicitly because
     # this test does not use the ``wiki`` fixture — F14 cares about the

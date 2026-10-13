@@ -60,12 +60,7 @@ def test_from_path_parses_frontmatter(tmp_path: Path) -> None:
 
 
 def test_from_path_extracts_derived_from_frontmatter(tmp_path: Path) -> None:
-    """``from_path`` reads the ``derived_from`` list from YAML frontmatter.
-
-    Synthesis pages persist ``derived_from`` as a YAML list in their
-    frontmatter; the catalog row must reflect that list (comma-joined)
-    so the F29 provenance helper can surface the page.
-    """
+    """``from_path`` reads the ``derived_from`` list from YAML frontmatter."""
     wiki_root = tmp_path / "test-wiki"
     wiki_root.mkdir()
     page_dir = wiki_root / "wiki" / "claude-code" / "synthesis"

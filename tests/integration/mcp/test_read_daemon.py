@@ -1,14 +1,4 @@
-"""The read tool's bodies against the live qmd daemon, not against a stub.
-
-A stub returns whatever the test author typed into it, so a stub test
-passes against the line-numbered CLI output just as happily as against a
-clean body. These assertions are on properties of the real corpus: no
-``N: `` line-number prefixes, no ``qmd://…`` header, a sentence quoted
-from the live document present byte-for-byte, and large documents whole.
-
-Integration because it touches the live daemon and a real ``get`` on a
-320KB document costs more than the 0.15s unit budget.
-"""
+"""The read tool's bodies against the live qmd daemon, not against a stub."""
 
 from __future__ import annotations
 
@@ -39,14 +29,7 @@ def test_a_quote_from_the_live_document_appears_in_the_returned_body() -> None:
 
 
 def test_a_large_document_comes_back_whole() -> None:
-    """A body far past multi_get's 10KB cap is returned intact.
-
-    Asserted against the file on disk, head and tail, so the assertion is
-    about non-truncation rather than about this document's current size or
-    last heading. The >10_000 floor is the one number about qmd's cap
-    rather than the corpus: below it ``multi_get`` would not have skipped
-    the document, so the test would prove nothing about why ``get`` is used.
-    """
+    """A body far past multi_get's 10KB cap is returned intact."""
     from lies.mcp.read import read
 
     body = read.fn(paths=["claude_code/hooks.md"])["claude_code/hooks.md"]

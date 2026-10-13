@@ -42,9 +42,7 @@ def test_ask_prompt_skips_cite_render_when_tag_is_none() -> None:
 
 
 def test_ask_prompt_parses_filters_out_of_question() -> None:
-    """``+tag`` and ``-tag`` markers are stripped from the question text
-    and routed into ``tag_expr`` / ``exclude_tags`` on the dispatched
-    tool calls."""
+    """``+tag`` and ``-tag`` markers are stripped from the question text and routed into ``tag_expr`` / ``exclude_tags`` on the dispatched tool calls."""
     from lies.mcp.prompts_impl import ask_prompt
 
     [msg] = ask_prompt("+c:alpha -t:draft my question")
@@ -61,8 +59,7 @@ def test_ask_prompt_parses_filters_out_of_question() -> None:
 
 
 def test_ask_prompt_no_filter_tokens_passes_question_through_untouched() -> None:
-    """When no ``+tag`` / ``-tag`` markers are present, the question
-    passes through verbatim and both routed args template as ``None``."""
+    """When no ``+tag`` / ``-tag`` markers are present, the question passes through verbatim and both routed args template as ``None``."""
     from lies.mcp.prompts_impl import ask_prompt
 
     [msg] = ask_prompt("plain question text")
@@ -74,8 +71,7 @@ def test_ask_prompt_no_filter_tokens_passes_question_through_untouched() -> None
 
 
 def test_ask_prompt_multi_plus_tokens_combine_with_or() -> None:
-    """Multiple ``+tag`` tokens are OR-joined with ``|`` per the
-    canonical include-expression form."""
+    """Multiple ``+tag`` tokens are OR-joined with ``|`` per the canonical include-expression form."""
     from lies.mcp.prompts_impl import ask_prompt
 
     [msg] = ask_prompt("+c:alpha +c:beta my question")
@@ -85,13 +81,7 @@ def test_ask_prompt_multi_plus_tokens_combine_with_or() -> None:
 
 
 def test_ask_prompt_tolerates_an_apostrophe_in_the_question() -> None:
-    """The prompt body's motivating question, verbatim.
-
-    A ``shlex``-based splitter raised ``ValueError: No closing
-    quotation`` here, which FastMCP surfaces as a ``PromptError`` --
-    the prompt failed for the exact English a user is most likely to
-    type. Question text is prose, not shell.
-    """
+    """The prompt body's motivating question, verbatim."""
     from lies.mcp.prompts_impl import ask_prompt
 
     [msg] = ask_prompt("what are Claude Code's plugin differences?")
@@ -109,8 +99,7 @@ def test_ask_prompt_tolerates_an_unbalanced_quote() -> None:
 
 
 def test_ask_prompt_with_only_filter_tokens_asks_for_a_question() -> None:
-    """A tail of nothing but ``+tag`` markers used to render a search for
-    the empty string, which the qmd daemon treats as a real query."""
+    """A tail of nothing but filter markers asks for a question instead of searching for an empty string."""
     from lies.mcp.prompts_impl import ask_prompt
 
     [msg] = ask_prompt("+c:opencode")

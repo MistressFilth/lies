@@ -1,5 +1,4 @@
-"""End-to-end: wiki with library content + wiki content surfaces both
-with source tags in the answer."""
+"""End-to-end: wiki with library content + wiki content surfaces both with source tags in the answer."""
 
 from pathlib import Path
 
@@ -50,8 +49,7 @@ def mixed_wiki(tmp_path: Path) -> Wiki:
 
 
 def test_query_returns_library_and_wiki_pages(mixed_wiki: Wiki) -> None:
-    """A single retrieve_pages call surfaces both library and wiki
-    pages with their respective source tags."""
+    """A single retrieve_pages call surfaces both library and wiki pages with their respective source tags."""
     from lies.query.synthesizer import retrieve_pages
 
     Library.open.cache_clear()
@@ -77,8 +75,7 @@ def test_query_returns_library_and_wiki_pages(mixed_wiki: Wiki) -> None:
 
 
 def test_query_wiki_only_when_library_empty(mixed_wiki: Wiki) -> None:
-    """Library returns 0 hits, wiki returns hits — fallback_reason
-    is wiki_only and the body opens with the not-grounded preamble."""
+    """Library returns 0 hits, wiki returns hits — fallback_reason is wiki_only and the body opens with the not-grounded preamble."""
     from lies.query.synthesizer import retrieve_pages
 
     Library.open.cache_clear()
@@ -146,14 +143,7 @@ def subagents_library_wiki(tmp_path: Path) -> Wiki:
 def test_inline_citation_form_emitted_for_md_format(
     subagents_library_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F19 inline citation form for prose ``md`` answers (spec §1).
-
-    Stubs :func:`Orchestrator._query_synthesizer_agent.run_sync` so the
-    canned synth answer rides through verbatim, and asserts the F19
-    surface: the body carries inline ``[[slug]]: "verbatim"`` citations
-    per claim and does NOT carry the retired ``[^N]`` footnote-block
-    rendering F19 replaced.
-    """
+    """F19 inline citation form for prose ``md`` answers (spec §1)."""
     from lies.agents.query_synthesizer import QueryAnswer
     from lies.orchestrator import Orchestrator
     from tests.conftest import models_for_tests
@@ -195,13 +185,7 @@ def test_inline_citation_form_emitted_for_md_format(
 def test_inline_citation_form_emitted_for_table_format(
     sample_wiki: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F19 inline citation form for table answers (spec §1).
-
-    Pins the F19 surface on the table format path:
-    ``Orchestrator.run_query_with_format(cli_format="table")`` returns
-    a ``QueryAnswer`` whose body carries inline ``[[slug]]: "verbatim"``
-    citations, NOT the retired ``[^N]`` footnote-block.
-    """
+    """F19 inline citation form for table answers (spec §1)."""
     from unittest import mock
 
     from lies.agents.query_synthesizer import QueryAnswer

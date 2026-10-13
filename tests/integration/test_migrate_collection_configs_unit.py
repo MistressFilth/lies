@@ -108,9 +108,7 @@ def test_migration_idempotent(library: Library, wikis_root: Path) -> None:
 def test_cli_duplicate_surfaces_paths(
     library: Library, wikis_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Operator-actionable output: each duplicate-slug conflict prints
-    one line listing all colliding source paths BEFORE the command exits 2.
-    """
+    """Operator-actionable output: each duplicate-slug conflict prints one line listing all colliding source paths BEFORE the command exits 2."""
     from lies import xdg
 
     monkeypatch.setattr(xdg, "config_home", lambda: wikis_root.parent)
@@ -132,10 +130,7 @@ def test_cli_duplicate_surfaces_paths(
 
 
 def test_plan_surfaces_library_collision(library: Library, wikis_root: Path) -> None:
-    """A pre-existing library config under the same slug is a pre-flight
-    collision; partial-state re-run surfaces the same conflict before any
-    write instead of raising ``CollectionAlreadyExists`` mid-Phase-2.
-    """
+    """A pre-existing library config under the same slug is a pre-flight collision."""
     from lies.library.config_io import save_config
     from lies.library.record import LibraryCollectionConfig
 
@@ -200,9 +195,7 @@ def test_apply_aborts_on_library_collision_without_force(
 
 
 def test_apply_force_overwrites_library_collision(library: Library, wikis_root: Path) -> None:
-    """`--force` overwrites a colliding library config; the wiki YAML
-    is consumed and the library record now reflects the wiki source.
-    """
+    """`--force` overwrites a colliding library config; the wiki YAML is consumed and the library record now reflects the wiki source."""
     wiki_dir = wikis_root / "default"
     wiki_dir.mkdir()
     _write_yaml(wiki_dir / "collections" / "claude_code.yaml")

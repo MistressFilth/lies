@@ -72,14 +72,7 @@ def test_path_render_cmd_is_invoked_and_converted(tmp_path: Path) -> None:
 def test_path_render_cmd_preserves_state_across_builds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Two ``build()`` calls invoke the render_cmd twice with the same args.
-
-    The path-import single-call contract is exercised by
-    ``test_path_render_cmd_is_invoked_and_converted``; this test pins the
-    state-preservation invariant (the render callable's module-level
-    state survives multiple builds) without paying the disk-import cost
-    of the path-loaded stub on every build.
-    """
+    """Two ``build()`` calls invoke the render_cmd twice with the same args."""
     import types
 
     module_name = "lies_liquid_render_render"

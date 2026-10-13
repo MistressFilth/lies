@@ -1,8 +1,4 @@
-"""Unit tests for the generalized ``missing_required_section`` lint check.
-
-Emits one finding per violating page, all missing headings named, ``safe_to_fix=False``
-(missing sections are content gaps; the repair agent's HARD RULE forbids ops on these).
-"""
+"""Unit tests for the generalized ``missing_required_section`` lint check."""
 
 from __future__ import annotations
 
@@ -106,10 +102,7 @@ def test_no_finding_when_all_required_sections_present(wiki) -> None:
 
 
 def test_per_wiki_override_changes_required_sections(wiki) -> None:
-    """Override schema replaces the contract — the operator's per-wiki schema is the source of truth.
-
-    Pins that ``_build_lint_report`` reads ``wiki.section_contract``, not a hard-coded default.
-    """
+    """Override schema replaces the contract — the operator's per-wiki schema is the source of truth."""
     _ = wiki.section_contract  # populate the cached_property slot
     wiki.config_root.mkdir(parents=True, exist_ok=True)
     (wiki.config_root / "schema.md").write_text(

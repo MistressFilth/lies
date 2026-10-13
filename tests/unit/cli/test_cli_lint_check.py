@@ -1,10 +1,4 @@
-"""`lies lint --check <category>` — the CLI half of the prompt's scoping.
-
-The MCP `lint` tool has taken a `check` argument since 0.42.0 and the
-`lint` prompt renders `--check <name>` for it. The CLI had no such
-flag, so `lies lint --check orphans` failed where the tool worked —
-two surfaces documenting one feature, one of them unable to run it.
-"""
+"""`lies lint --check <category>` — the CLI half of the prompt's scoping."""
 
 from __future__ import annotations
 

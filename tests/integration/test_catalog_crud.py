@@ -107,13 +107,7 @@ def test_open_catalog_seeds_on_first_open(tmp_path: Path) -> None:
 
 @pytest.mark.slow
 def test_open_catalog_seeds_existing_disk_files(tmp_path: Path) -> None:
-    """Add a ``.md`` file, delete catalog.db, re-open: row appears.
-
-    Regression test for the Task 7 review findings I1/I2: first-open
-    backfill belongs in :func:`open_catalog` (triggered by file
-    absence, not empty-row count) so a fresh wiki's catalog mirrors
-    the on-disk ``.md`` set without a manual ``rebuild`` step.
-    """
+    """Add a ``.md`` file, delete catalog.db, re-open: row appears."""
     wiki_dir = tmp_path / "wiki"
     wiki_dir.mkdir()
     page_dir = wiki_dir / "x" / "concepts"
@@ -151,13 +145,7 @@ def test_open_catalog_seeds_existing_disk_files(tmp_path: Path) -> None:
 
 @pytest.mark.slow
 def test_open_catalog_does_not_reseed_existing_catalog(tmp_path: Path) -> None:
-    """Cleared catalog (``pages`` empty, file present) is NOT auto-seeded.
-
-    The first-open trigger is file-existence, not row count. An
-    intentionally cleared catalog stays empty until a manual
-    ``rebuild`` / ``reconcile`` populates it — otherwise the
-    "empty rows" signal would mask catalog debugging state.
-    """
+    """Cleared catalog (``pages`` empty, file present) is NOT auto-seeded."""
     wiki_dir = tmp_path / "wiki"
     wiki_dir.mkdir()
     page_dir = wiki_dir / "x" / "concepts"
@@ -301,13 +289,7 @@ def test_rebuild_from_disk_walks_markdown(tmp_path: Path) -> None:
 
 @pytest.mark.slow
 def test_rebuild_from_disk_keeps_nested_system_named_files(tmp_path: Path) -> None:
-    """A nested ``concepts/index.md`` is a real wiki page, not a system file.
-
-    Guards against the Task 3 review finding: the previous basename-based
-    filter (``md.name in {"index.md", ...}``) silently dropped a legit
-    ``<collection>/concepts/index.md`` even though only the top-level
-    ``wiki/index.md`` is a system artifact.
-    """
+    """A nested ``concepts/index.md`` is a real wiki page, not a system file."""
     from lies.memory.catalog import rebuild_from_disk
 
     wiki_dir = tmp_path / "wiki"
@@ -507,11 +489,7 @@ def test_slug_for_double_prefixed_path() -> None:
 
 
 def test_catalog_rebuild_index_removed() -> None:
-    """Regression guard: ``rebuild_index`` was deleted in the F4b+F16
-    catalog port (commit 169871d); if it reappears, the catalog is
-    no longer the sole source-of-truth and ``apply_plan`` upserts
-    may be bypassed.
-    """
+    """``rebuild_index`` must stay gone: the catalog is the sole source of truth."""
     import lies.memory.catalog as catalog
 
     assert not hasattr(catalog, "rebuild_index")
@@ -525,12 +503,7 @@ def test_catalog_rebuild_index_removed() -> None:
 
 
 def test_reconcile_wiki_catalog_drops_stale_rows(tmp_path: Path) -> None:
-    """Rows whose on-disk file is gone must be dropped.
-
-    The lightweight search-time reconcile only deletes ghost rows;
-    it does NOT add missing rows (that lives in the heavy
-    ``lies catalog reconcile`` CLI path).
-    """
+    """Rows whose on-disk file is gone must be dropped."""
     from lies.memory.catalog import open_catalog, reconcile_wiki_catalog, upsert_page
     from lies.memory.catalog_models import CatalogPage
 

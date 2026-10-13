@@ -1,8 +1,4 @@
-"""Scaffold test for the new lies.page package.
-
-Pins the public surface (WriteKnowledgeResult, build_author_plan) so
-later tasks can import without re-discovering the layout.
-"""
+"""Scaffold test for the new lies.page package."""
 
 from __future__ import annotations
 
@@ -49,15 +45,7 @@ def test_build_author_plan_is_callable():
 
 
 def test_build_author_plan_synthesis_returns_plan_with_tag():
-    """synthesis branch is implemented (Task 5); empty derived_from still raises.
-
-    Task 2 pinned ``NotImplementedError`` while synthesis was pending.
-    Task 5 lands the F3 migration: synthesis with a non-empty
-    ``derived_from`` returns a ``MemoryPlan`` whose op has
-    ``tag == "synthesis"``; empty ``derived_from`` still raises
-    ``WikiPlanInvalid`` (F3 invariant — no ingested source means no
-    synthesis).
-    """
+    """The synthesis branch returns a plan tagged ``synthesis``; an empty ``derived_from`` still raises."""
     from lies.memory.models import WikiPlanInvalid
 
     # Non-empty derived_from → success with synthesis tag.

@@ -1,21 +1,4 @@
-"""Pin the sync prompt hands the user's request to the agent verbatim,
-and the agent identifies collection names from natural language.
-
-The prompt's previous vocabulary (``--data-dir``, ``--only``,
-``--jobs``, ``--scraper-timeout``, ``--no-ingest``, ``--dry-run``)
-named options ``lies sync`` has never declared, so every one of those
-commands exited 2 before it did anything. The vocabulary is
-transcribed from the Typer signature in
-``src/lies/cli/ingestion.py``; the flags that used to be advertised
-are now *unrecognized*, and the tests below say so rather than
-rendering them.
-
-The shape matches ``ask_prompt`` and ``ground_prompt``: a verbatim
-block carries the user's request; the agent interprets it. The body
-does not parse collection names positionally, so a pasted sentence
-("please resync my library collections") no longer fans out across
-the library as one ``Run Bash(lies sync <word>)`` per word.
-"""
+"""The sync prompt hands the user's request to the agent verbatim, and the agent identifies collection names from natural language."""
 
 from __future__ import annotations
 
@@ -23,14 +6,7 @@ from tests.unit.mcp._prompt_body import carries_verbatim, rendered_body
 
 
 def test_sync_prompt_carries_the_user_request_verbatim() -> None:
-    """The agent reads the user's request, not a tokenized positional list.
-
-    A ``user_request`` fence appears, and the verbatim question text
-    is inside it (no repr escaping). The agent uses
-    ``mcp__lies__collections_read`` to ground names against the
-    registry, so model-side identification — not the prompt body —
-    decides which collections to dispatch.
-    """
+    """The agent reads the user's request, not a tokenized positional list."""
     from lies.mcp.prompts_impl import sync_prompt
 
     [msg] = sync_prompt("pydantic fastmcp mermaid")
@@ -41,9 +17,7 @@ def test_sync_prompt_carries_the_user_request_verbatim() -> None:
 
 
 def test_sync_prompt_threads_the_flags_the_cli_has() -> None:
-    """Flags are still parsed deterministically; only collection
-    identification moves to the model.
-    """
+    """Flags are still parsed deterministically; only collection identification moves to the model."""
     from lies.mcp.prompts_impl import sync_prompt
 
     [msg] = sync_prompt("pydantic --force --skip-reindex --source https://x.example/docs")
@@ -54,10 +28,7 @@ def test_sync_prompt_threads_the_flags_the_cli_has() -> None:
 
 
 def test_sync_prompt_instructs_for_general_requests() -> None:
-    """A request that names no collection (or names them generally)
-    leaves the positional off — ``lies sync`` syncs every registered
-    collection when no positional is given.
-    """
+    """A request that names no collection (or names them generally) leaves the positional off."""
     from lies.mcp.prompts_impl import sync_prompt
 
     [msg] = sync_prompt("sync the library")
@@ -67,8 +38,7 @@ def test_sync_prompt_instructs_for_general_requests() -> None:
 
 
 def test_sync_prompt_through_the_mcp_wire_shape() -> None:
-    """The whole slash tail binds to the single `tail` string parameter, so a
-    bare word can never land in a typed list[int] slot and fail JSON decode."""
+    """The whole slash tail binds to the single `tail` string parameter, so a bare word can never land in a typed list[int] slot and fail JSON decode."""
     from lies.mcp.prompts_impl import sync_prompt
 
     [msg] = sync_prompt("pydantic --force --skip-reindex")
@@ -79,8 +49,7 @@ def test_sync_prompt_through_the_mcp_wire_shape() -> None:
 
 
 def test_sync_value_flag_followed_by_a_flag_is_not_swallowed() -> None:
-    """Regression: ``--source --force`` set ``source='--force'`` and dropped
-    ``--force`` entirely, so the body ran neither as asked."""
+    """``--source --force`` set ``source='--force'`` and dropped ``--force`` entirely, so the body ran neither as asked."""
     from lies.mcp.prompts_impl import sync_prompt
 
     [msg] = sync_prompt("--source --force")
@@ -100,15 +69,7 @@ def test_sync_value_flag_at_end_of_tail_is_reported() -> None:
 
 
 def test_sync_names_an_unrecognized_flag() -> None:
-    """An unrecognized flag is a refusal, not a dropped word.
-
-    It used to be a note on a rendered command, which is the worst of
-    both: ``sync --bogus pydantic`` rendered ``Bash(lies sync
-    pydantic)`` *and* said "Unrecognized flag(s) ignored: --bogus", so
-    the user could not tell whether the collection survived. Now the
-    body refuses, and the refusal names both the flag and the word it
-    would have swallowed.
-    """
+    """An unrecognized flag is a refusal, not a dropped word."""
     from lies.mcp.prompts_impl import sync_prompt
 
     [msg] = sync_prompt("--bogus pydantic")
@@ -118,13 +79,7 @@ def test_sync_names_an_unrecognized_flag() -> None:
 
 
 def test_sync_refuses_a_flag_with_no_value_behind_it() -> None:
-    """``--bogus`` alone would leave the name list empty.
-
-    Dropping the flag and rendering ``Bash(lies sync)`` is worse than
-    rendering nothing: with no positional, ``lies sync`` syncs *every*
-    registered collection. A typo would trigger a whole-library scrape
-    and reindex. ``sync`` therefore refuses on any unrecognized flag.
-    """
+    """``--bogus`` alone would leave the name list empty."""
     from lies.mcp.prompts_impl import sync_prompt
 
     for tail in ("--bogus", "-pydantic", "--data-dir"):
@@ -135,12 +90,7 @@ def test_sync_refuses_a_flag_with_no_value_behind_it() -> None:
 
 
 def test_the_removed_sync_flags_are_reported_not_rendered() -> None:
-    """The exact strings the review found, pinned as regressions.
-
-    Each was advertised by the prompt and declared by no ``lies``
-    command. If a future CLI grows one, this test fails and points at
-    the prompt table that should offer it.
-    """
+    """Retired flags are reported as retired, not rendered as if they worked."""
     from lies.mcp.prompts_impl import sync_prompt
 
     for invented, value in (
@@ -159,16 +109,7 @@ def test_the_removed_sync_flags_are_reported_not_rendered() -> None:
 
 
 def test_sync_renders_the_negated_booleans_the_cli_declares() -> None:
-    """``--no-skip-reindex`` was missing from the table, so the flag was
-    dropped with no word and the rendered command ran the qmd
-    update+embed chain the user asked to skip.
-
-    With the natural-language handoff, the agent reads the flag and
-    threads it into each ``Bash(lies sync ...)`` it dispatches. The
-    flag is in the verbatim user request *and* threaded as a parsed
-    flag, so the agent sees it twice (once raw, once structured) —
-    the structured form is the one it must pass to Bash.
-    """
+    """A ``--no-<flag>`` the CLI declares is rendered."""
     from lies.mcp.prompts_impl import sync_prompt
 
     for tail, rendered in (
@@ -184,12 +125,7 @@ def test_sync_renders_the_negated_booleans_the_cli_declares() -> None:
 
 
 def test_sync_no_positionals_pasted_english_does_not_fan_out() -> None:
-    """A pasted sentence used to render one Bash per word.
-
-    With no positional parsing, the agent reads the request and
-    asks before dispatching. The body never pre-renders one Bash per
-    word — collection identification belongs to the model.
-    """
+    """Pasted English names no collection, so nothing fans out."""
     from lies.mcp.prompts_impl import sync_prompt
 
     [msg] = sync_prompt("please resync my library collections now")
@@ -204,9 +140,7 @@ def test_sync_no_positionals_pasted_english_does_not_fan_out() -> None:
 
 
 def test_sync_asks_the_agent_to_ground_against_the_registry() -> None:
-    """When a name is ambiguous, the agent queries ``collections_read``
-    rather than guessing.
-    """
+    """When a name is ambiguous, the agent queries ``collections_read`` rather than guessing."""
     from lies.mcp.prompts_impl import sync_prompt
 
     [msg] = sync_prompt("resync the thing I mentioned yesterday")

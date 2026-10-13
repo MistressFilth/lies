@@ -1,22 +1,4 @@
-"""Unit-level regression pins for ``lies.etl.sync_helper.sync_collection``.
-
-Phase-2 inverted the ingest target from ``wiki.wiki_dir`` to the
-library singleton at ``xdg.data_home() / LIES_DATA_SUBDIR / library``.
-These tests pin that swap at the ``sync_helper`` boundary so a future
-re-routing regression fails closed (file lands at wiki, not library;
-catalog row missing in library; negative control violated).
-
-The tests drive ``sync_collection`` end-to-end with a static
-``ScraperFetcher`` double so the file lands on real disk and the
-catalog row lands in a real ``catalog.db`` — the assertions then
-inspect those artifacts directly.
-
-The wiki fixture is a stub whose ``data_root`` shadows the library's
-``git_root`` so the negative control (no write to
-``wiki.wiki_dir / <c> / <slug>.md``) is meaningful: a regression that
-re-targets the write back to ``wiki.wiki_dir`` would re-introduce the
-file at the negative-control path and trip the assertion.
-"""
+"""Unit-level regression pins for ``lies.etl.sync_helper.sync_collection``."""
 
 from __future__ import annotations
 
@@ -134,19 +116,7 @@ class _StaticFetcher:
 
 
 def test_sync_helper_writes_to_library_not_wiki(fixture_lib: Library, monkeypatch) -> None:
-    """``sync_helper.sync_collection`` lands the mirror at the library path.
-
-    Three contract pins:
-
-      1. Mirror file lands at ``<library.collections_root>/<c>/<slug>.md``.
-      2. Catalog row exists in ``<library.catalog_path>`` with
-         ``section="library"``.
-      3. Wiki's ``wiki_dir`` did NOT receive a write (negative control).
-
-    Without all three, the ingest → library swap is not actually
-    effective on disk. A regression that writes to one location but
-    leaves the other unchanged would break at least one pin.
-    """
+    """``sync_helper.sync_collection`` lands the mirror at the library path."""
     wiki = _stub_wiki(fixture_lib)
     _seed_collection(wiki)
 
@@ -213,17 +183,7 @@ def test_sync_helper_writes_to_library_not_wiki(fixture_lib: Library, monkeypatc
 def test_sync_helper_returns_batch_ingest_result_from_library(
     fixture_lib: Library, monkeypatch
 ) -> None:
-    """The library ``run_batch_ingest`` is the one whose return value flows
-    back out of ``sync_collection``.
-
-    Without this pin, a regression that routes the call back through
-    the legacy wiki-side ``run_write`` (which returns ``StageResult``,
-    not ``BatchIngestResult``) would explode at the ``CLI`` exit-code
-    branch — or worse, silently exit 0 on a wholly-failed batch.
-    Mocks the library-side ``run_batch_ingest`` so the test does not
-    depend on the real ingest pipeline; captures the kwargs to assert
-    ``library`` is plumbed through.
-    """
+    """The library ``run_batch_ingest`` is the one whose return value flows back out of ``sync_collection``."""
     wiki = _stub_wiki(fixture_lib)
     _seed_collection(wiki)
 

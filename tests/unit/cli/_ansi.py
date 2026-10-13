@@ -1,10 +1,4 @@
-"""Shared helpers for asserting against Typer+Rich rendered CLI output.
-
-Typer+Rich splits flag names with ANSI escape sequences when rendered
-non-interactively (``CI=1 NO_COLOR=1 COLUMNS=80``). Substring checks like
-``"--source" in result.output`` fail because the dashes are no longer
-contiguous. Strip ANSI before matching.
-"""
+"""Shared helpers for asserting against Typer+Rich rendered CLI output."""
 
 from __future__ import annotations
 

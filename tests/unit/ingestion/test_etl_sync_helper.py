@@ -59,12 +59,7 @@ def test_acquire_heartbeat_returns_none_when_busy(wiki: Wiki) -> None:
 
 
 def test_acquire_heartbeat_atomic_under_concurrent_acquire(wiki: Wiki) -> None:
-    """Two concurrent acquire_create_lock calls cannot both succeed.
-
-    This exercises the OS-level O_EXCL guarantee that backs the
-    TOCTOU-safe acquire path. The first wins the create; the second
-    gets FileExistsError → None.
-    """
+    """Two concurrent acquire_create_lock calls cannot both succeed."""
     from lies.etl.heartbeat import acquire_create_lock, release_create_lock
 
     fd1 = acquire_create_lock(wiki)

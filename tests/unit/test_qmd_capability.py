@@ -89,8 +89,7 @@ def test_http_capability_uses_local_when_daemon_unreachable(
 def test_local_factory_yields_an_mcptoolset_over_fallback(
     wiki_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The factory the capability builds for the local branch must, when
-    called, return an MCPToolset wrapping the in-process FastMCP server."""
+    """The factory the capability builds for the local branch must, when called, return an MCPToolset wrapping the in-process FastMCP server."""
     from pydantic_ai.mcp import MCPToolset
     from pydantic_ai.tools import Tool
 
@@ -113,8 +112,7 @@ def test_local_factory_yields_an_mcptoolset_over_fallback(
 def test_per_call_recovery_after_daemon_returns(
     wiki_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If the probe flips from False to True between calls, the capability
-    advertises the native QmdRecycleToolset again on the next call."""
+    """If the probe flips from False to True between calls, the capability advertises the native QmdRecycleToolset again on the next call."""
     from lies.qmd.mcp import QmdRecycleToolset
 
     layout = WikiLayout(wiki_root)
@@ -146,13 +144,7 @@ def test_qmd_capability_falls_back_when_liveness_probe_fails(
     wiki_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Construction-time liveness probe failure -> in-process fallback MCP.
-
-    Replaces the older ``QmdRecycleFailed`` assertion: construction is
-    now a non-destructive fastmcp.Client.list_tools() round-trip. A
-    probe failure (httpx.ConnectError, MCPError, OSError) flips us
-    to the in-process :class:`QmdFallbackMcp` and logs ``_warn_degraded``.
-    """
+    """Construction-time liveness probe failure -> in-process fallback MCP."""
     import httpx
 
     from tests.conftest import make_wiki
@@ -204,12 +196,7 @@ def test_qmd_capability_falls_back_when_liveness_probe_fails(
 def test_as_capability_reaps_when_daemon_is_stale(
     wiki_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Stale daemon at construction -> reap+respawn before advertising toolset.
-
-    Closes the silent-failure mode where a stale-but-serving qmd daemon
-    passes the TCP probe in QmdCapability.as_capability and serves
-    pre-write data to the agent (F14 residual).
-    """
+    """Stale daemon at construction -> reap+respawn before advertising toolset."""
     from pydantic_ai.capabilities import MCP
 
     from tests.conftest import make_wiki
@@ -261,12 +248,7 @@ def test_as_capability_reaps_when_daemon_is_stale(
 def test_as_capability_does_not_reap_when_daemon_is_fresh(
     wiki_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fresh daemon at construction -> no reap envelope, native toolset advertised.
-
-    Pins the no-op path: a healthy daemon (marker mtime <= daemon
-    pidfile mtime) sees the existing behavior unchanged. The new
-    reap block must not run on the fresh path.
-    """
+    """Fresh daemon at construction -> no reap envelope, native toolset advertised."""
     from pydantic_ai.capabilities import MCP
 
     from tests.conftest import make_wiki
@@ -307,13 +289,7 @@ def test_as_capability_does_not_reap_when_daemon_is_fresh(
 def test_as_capability_falls_back_when_native_probe_fails_after_reap(
     wiki_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Stale + reap succeeds + JSON-RPC probe fails -> in-process fallback.
-
-    Pins the recovery path: even when the reap envelope fires, if
-    the freshly-spawned daemon does not serve JSON-RPC, the
-    existing fallback path takes over (no regression in error
-    handling).
-    """
+    """Stale + reap succeeds + JSON-RPC probe fails -> in-process fallback."""
     import httpx
 
     from tests.conftest import make_wiki

@@ -172,15 +172,7 @@ class TestResolverBuildAndResolveDict:
         assert r.resolve("anything") is None
 
     def test_resolve_prefix_overlapping_keys_longest_match(self, tmp_path: Path) -> None:
-        """Prefix-overlapping keys: longest basename wins the lookup.
-
-        Two pages whose stems share a prefix (foo, foobar). Each key in
-        the resolver's dict is, by construction, the full normalized
-        lowercased basename — so a query for ``foobar`` matches only
-        ``foobar.md`` and a query for ``foo`` matches only ``foo.md``.
-        The collision in ``build()`` (when both pages share a stem)
-        is unrelated.
-        """
+        """Prefix-overlapping keys: longest basename wins the lookup."""
         wiki = tmp_path / "wiki"
         wiki.mkdir()
         _write_page(wiki, "foo.md", "# foo\n")
@@ -229,10 +221,7 @@ class TestResolverUsesAhoCorasick:
         assert r.resolve("Beta") == (wiki / "beta.md").resolve()
 
     def test_aho_backed_results_match_dict(self, tmp_path: Path) -> None:
-        """AC-backed ``resolve()`` returns the same Path as dict-only for every
-        key — including prefix-overlapping keys where ``overlapping=True`` is
-        required to surface the longer match.
-        """
+        """AC-backed ``resolve()`` returns the same Path as dict-only for every key."""
         try:
             import ahocorasick_rs  # noqa: F401
         except ImportError:
@@ -303,12 +292,7 @@ class TestResolverImportFallback:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """After a forced-failure test, the dep should be importable again.
-
-        ``monkeypatch`` restores ``sys.modules`` on teardown, so a fresh
-        ``import ahocorasick_rs`` succeeds. This pins the contract that
-        the patched-import test does not leak module-level state.
-        """
+        """After a forced-failure test, the dep should be importable again."""
         # Pre-condition: the dep is importable (skip otherwise).
         try:
             import ahocorasick_rs
