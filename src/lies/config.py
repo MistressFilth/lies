@@ -8,16 +8,8 @@ from pathlib import Path
 from lies import xdg
 
 DEFAULT_QMD_TRANSPORT = "http"
-# The path qmd's HTTP MCP server serves. A bare origin 404s, which
-# the access seam reads as a transport failure and reports as a
-# *down* daemon.
-#
-# The host is the *name* ``localhost``, not a literal address: qmd
-# binds the name (``dist/mcp/server.js``: ``listen(port,
-# "localhost")``) and Node takes the first family the host resolves
-# it to. An IPv6-first ``/etc/hosts`` puts the daemon on ``[::1]``
-# and refuses the IPv4 dial — measured on the CI runner. Naming the
-# host resolves whichever family qmd got.
+# The path qmd's HTTP MCP server serves, and the *name* it binds — both
+# facts and their consequences are in AGENTS.md, "The qmd access seam".
 DEFAULT_QMD_URL = "http://localhost:8181/mcp"
 DEFAULT_WIKI_NAME = "default"
 # Per-call deadline for a qmd *retrieval* subprocess, read at call time. 60s is

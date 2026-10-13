@@ -121,11 +121,10 @@ async def synthesize(
         top_k=10,  # more context for the synthesizer
     )
 
-    # 2. The retrieval did not finish → inconclusive, not empty. A
-    # dispatch failure and a clean miss both arrive with zero citations,
-    # and collapsing them tells the user their library has nothing when
-    # the process is at fault. ``fallback_reason`` carries the digest's
-    # own reason; only ``ground()`` knows which failure this was.
+    # 2. Retrieval did not finish → inconclusive, not empty. A dispatch
+    # failure and a clean miss both arrive with zero citations, and
+    # collapsing them tells the user their library has nothing when the
+    # process is at fault.
     if digest.transient:
         return SynthesizeEnvelope(
             question=question,
@@ -308,28 +307,14 @@ def librarian_agent_run(deps: Any) -> Any:
     register_librarian_tools(agent, search_diagnostics=diagnostics)
     # No ``except QmdLockBusy`` arm here, and there must not be one:
     # ``_search_impl`` catches ``Exception`` and returns an envelope, so
-    # the exception cannot cross the agent boundary. Its rendering is
-    # ``_search_impl``'s own ``fallback_reason``, which ``diagnostics``
-    # carries the rest of the way.
+    # the exception cannot cross the agent boundary.
     try:
         result = agent.run_sync(deps.question, deps=deps)
     except Exception as exc:
-        # Fail-soft: pydantic-ai raises (e.g.
-        # ``UsageLimitExceeded``) when the librarian LLM cannot produce a
-        # valid ``LibrarianOutput`` after its retry budget, and the MCP
-        # ``lib_ask`` tool must surface an honest envelope rather than
-        # crashing the user's request.
-        #
-        # ``transient=True, no_coverage=False`` rather than
-        # ``no_coverage=True``: the librarian LLM never ran, so this
-        # bundle is a fact about the run and carries no information
-        # about the corpus — ``no_coverage=True`` here renders as "No
-        # relevant content found in library", naming a corpus problem for
-        # a model outage.
-        #
-        # The bundle still goes through ``with_search_diagnostics``:
-        # ``run_sync`` raising does not un-happen a search the model
-        # already ran, and a recorded reason names the remedy.
+        # Fail-soft: an honest envelope, not a crashed request. ``transient``
+        # not ``no_coverage`` — the LLM never ran (AGENTS.md, "Data
+        # shapes"). ``with_search_diagnostics`` still applies: raising
+        # does not un-happen a search the model already ran.
         log.warning(
             "librarian_agent_run: dispatch failed (%s: %s); returning transient fallback",
             type(exc).__name__,
@@ -485,11 +470,9 @@ def _ask_impl(
     lib_out = librarian_agent_run(deps)
 
     if lib_out.transient:
-        # The librarian never dispatched, so the fixed sentence must not
-        # name a corpus problem for a model outage. Render the bundle's
-        # own reason, which ``search`` fills with the holder pid, the
-        # elapsed wait, the budget and the contended inode; the fixed
-        # wording is only the fallback for a bundle carrying none.
+        # The librarian never dispatched, so the fixed sentence must not name
+        # a corpus problem for a model outage. Render the bundle's own
+        # reason; the fixed wording is the fallback for one carrying none.
         return SynthesizeEnvelope(
             question=question,
             tag_expr=tag_expr,
@@ -508,12 +491,10 @@ def _ask_impl(
         )
 
     if not lib_out.excerpts:
-        # Read the bundle's own reason here too. ``_search_impl`` writes
-        # the specific cause into the envelope and
-        # ``with_search_diagnostics`` carries it onto the bundle, so an
-        # unknown tag and a registered-but-empty collection are already
-        # named; the fixed sentence is only the fallback for a bundle
-        # that genuinely carries none.
+        # Read the bundle's own reason here too — ``_search_impl`` names the
+        # specific cause (unknown tag, empty collection) and
+        # ``with_search_diagnostics`` carries it onto the bundle. The
+        # fixed sentence is the fallback for a bundle carrying none.
         return SynthesizeEnvelope(
             question=question,
             tag_expr=tag_expr,

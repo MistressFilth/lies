@@ -700,7 +700,7 @@ MCP tool path routes through the librarian instead. `lib_ask` goes
 seam section above). `ground()` reaches `access.daemon_tool` directly
 on its unscoped and tagged fast-paths, so the exception arrives as a
 real exception and its own `except QmdLockBusy` arms catch it —
-`grounding.py:465` and `:535`. Two mechanisms, two different
+`grounding.py:403` and `:472`. Two mechanisms, two different
 shapes, both live.
 
 So: the arms are reachable, the digest field has a reader
@@ -820,6 +820,26 @@ three rules there are load-bearing:
   `catalog.db` in lockstep.
 - **A no-op commit returns an empty receipt**, never changed pages that
   were not applied at the git level.
+
+`library/writer.py` mirrors that envelope, and four of its steps are
+load-bearing:
+
+- **A fresh library directory is bootstrapped to a git repo** on the first
+  writer creation. Without it, `lies ingest` writes mirror files to disk
+  and then raises `LibraryAtomicCommitFailed` at the `git add`.
+- **Deletions need an explicit `git add -u`,** because `atomic_commit`
+  stages the given paths only — a tracked file deleted from disk is never
+  staged, and every re-ingest accumulates ghost entries in HEAD. It is
+  `-u`, not `-A`: `-A` would also stage files the writer does not claim.
+- **The last-write marker is touched at the machine-global cache path**
+  before the qmd hook, so the daemon's mtime comparison sees this commit's
+  mtime rather than the hook's.
+- **A `QmdLockBusy` from the embed hook is re-raised, not swallowed.** The
+  message must name the holder PID and the contended inode, because that
+  is the one operator step distinguishing a contended host from a broken
+  one. `waited_s`/`max_s`/`holder_pid` are all guarded against `None`,
+  which the signature accepts on translation paths like
+  `WikiFlockIndeterminate`.
 
 ### Provenance
 

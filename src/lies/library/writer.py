@@ -81,11 +81,8 @@ def __getattr__(name: str):
 class LibraryWriter:
     def __init__(self, library: Library) -> None:
         self._library = library
-        # Idempotent git repo bootstrap. A fresh library directory
-        # (no ``.git``) gets a bootstrapped repo on first writer
-        # creation so the atomic-commit envelope can land; without it the
-        # first ``lies ingest`` writes mirror files to disk and then
-        # raises ``LibraryAtomicCommitFailed`` at the ``git add`` step.
+        # Idempotent git repo bootstrap: without it the first ``lies
+        # ingest`` writes mirror files and then fails at ``git add``.
         if not (library.git_root / ".git").exists():
             self._bootstrap_git_repo()
 
@@ -153,12 +150,9 @@ class LibraryWriter:
         catalog_updates: Iterable[LibraryCatalogPage] = (),
         qmd_collection: str | None = None,
     ) -> str | None:
-        # Accept both absolute and relative paths. Absolute paths
-        # are coerced via ``relative_to(git_root)``; callers that
-        # already pass repo-relative strings (or paths) round-trip
-        # unchanged. A path that escapes ``git_root`` raises a typed
-        # ``LibraryAtomicCommitFailed`` rather than being stringified,
-        # which would misclassify a caller mistake as a commit failure.
+        # Absolute paths are coerced via ``relative_to(git_root)``;
+        # repo-relative ones round-trip. An escape raises a typed
+        # ``LibraryAtomicCommitFailed`` rather than a stringified path.
         rel_paths: list[str] = []
         for p in paths:
             if isinstance(p, str):
@@ -179,15 +173,10 @@ class LibraryWriter:
             rel_paths.append(str(rel))
         updates = list(catalog_updates)
 
-        # Symmetric short-circuit. ``atomic_commit`` rejects
-        # ``files=[]`` as a programming error, so we cannot fall through
-        # when one side of the envelope is empty. Two cases:
-        #
-        #   rel_paths=[] and updates=[] → true no-op (return None).
-        #   rel_paths=[] and updates!=[] → catalog-only write, applied
-        #     so the catalog-side state stays consistent, then None.
-        #
-        # This mirrors the wiki-side ``WikiMemoryService.apply_plan`` envelope.
+        # Mirrors the wiki-side ``WikiMemoryService.apply_plan``. Both
+        # sides empty is a true no-op; an empty ``rel_paths`` with
+        # updates is a catalog-only write, applied so the catalog
+        # stays consistent. ``atomic_commit`` rejects ``files=[]``.
         if not rel_paths and not updates:
             return None
         if not rel_paths:
@@ -212,13 +201,10 @@ class LibraryWriter:
         if updates:
             self._upsert_catalog(updates)
 
-        # Reconcile deletions: ``atomic_commit`` runs ``git add -- <files>``
-        # for the explicit paths only, so a tracked file that was previously
-        # committed and then deleted from disk is never staged, and every
-        # re-ingest accumulates ghost entries in HEAD. ``git add -u`` (NOT
-        # ``-A``) stages only modifications and deletions of already-tracked
-        # files, leaving new untracked files alone — ``-A`` would also pick
-        # up files the writer does not claim.
+        # Reconcile deletions: ``atomic_commit`` stages the explicit paths
+        # only, so a deleted tracked file is never staged and every
+        # re-ingest accumulates ghosts in HEAD. ``-u`` not ``-A``:
+        # ``-A`` would stage files the writer does not claim.
         if sha is not None:
             try:
                 subprocess.run(
@@ -280,13 +266,9 @@ class LibraryWriter:
                             stacklevel=2,
                         )
 
-        # Mark that a library has been written since the qmd daemon started.
-        # Touched at the machine-global path so the daemon's staleness check
-        # reflects the union of every library + wiki write envelope, not just
-        # the current git_root. Best-effort and idempotent; the parent may not
-        # exist on a fresh install, so mkdir -p it first. Goes BEFORE the qmd
-        # post-commit hook so the daemon's mtime-vs-marker comparison sees
-        # this commit's mtime, not the hook's.
+        # Machine-global path, so staleness sees every library + wiki write;
+        # BEFORE the post-commit hook so the mtime compared is this
+        # commit's, not the hook's.
         if sha is not None:
             try:
                 _cache = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
@@ -296,26 +278,16 @@ class LibraryWriter:
             except OSError:
                 pass  # F14 is best-effort; do not fail the commit
 
-        # Post-commit qmd hook. Failures are non-fatal — the library
-        # commit already landed and is authoritative. Skip on a no-op commit
-        # (sha is None) since there is nothing new to register.
-        #
-        # Bare-name resolution matters here. The qmd helpers are exposed
-        # via :PEP:`562` module-level ``__getattr__`` (so ``import lies``
-        # does not pull pydantic_ai / fastmcp into ``sys.modules``).
-        # Python ``LOAD_GLOBAL`` bytecode does NOT consult
-        # ``__getattr__`` — bare-name lookup inside a function body
-        # raises ``NameError`` against ``module.__dict__``. Mirror the
-        # workaround :mod:`lies.cli.page` uses: explicit dict access with
-        # manual ``__getattr__`` re-invocation on miss.
+        # Post-commit qmd hook; non-fatal, skipped on a no-op commit. Bare
+        # names cannot resolve: the helpers live behind a :PEP:`562`
+        # module ``__getattr__`` (keeping ``import lies`` lazy) which
+        # ``LOAD_GLOBAL`` does not consult — see ``lies.cli.page``.
         if sha is not None and qmd_collection is not None:
             coll_dir = self._library.collections_root / qmd_collection
-            # Positional ``path`` is the library ``collections_root``
-            # (NOT ``coll_dir``) — the qmd hook resolves the registered
-            # path via ``library_target`` (the collection dir); ``path``
-            # is just a fallback used when ``library_target`` is not set.
-            # Passing a deliberately distinct value lets the wire test
-            # distinguish the positional from the kwarg.
+            # Positional ``path`` is ``collections_root``, not
+            # ``coll_dir``: the hook resolves the real target via
+            # ``library_target``. Distinct values let the wire test
+            # tell the positional from the kwarg.
             _qaou = globals().get("qmd_collection_add_or_update") or __getattr__(
                 "qmd_collection_add_or_update"
             )
@@ -345,22 +317,16 @@ class LibraryWriter:
             try:
                 _qemb(self._library.git_root, qmd_collection)
             except QmdLockBusy as exc:
-                # Re-raise with the spec-mandated message that names the
-                # holder PID and tells the operator to wait-and-retry, so the
-                # agent sees an actionable message instead of
-                # ``qmd embed failed; continuing (library commit stands)``.
-                # The format is guarded against ``waited_s``/``max_s``/
-                # ``holder_pid`` being ``None`` (the type signature accepts
-                # None for translation paths like ``WikiFlockIndeterminate``).
+                # Names the holder PID and tells the operator to wait-and-retry,
+                # so the agent sees an actionable message instead of
+                # "embed failed; continuing". Guarded against ``None``,
+                # which the signature accepts on translation paths.
                 waited_str = f"{exc.waited_s:.1f}" if exc.waited_s is not None else "unknown"
                 max_str = f"{exc.max_s:.0f}" if exc.max_s is not None else "unknown"
                 holder_str = str(exc.holder_pid) if exc.holder_pid is not None else "unknown"
-                # ``lock_path`` is forwarded because the flock is
-                # *resolvable*: naming the inode is the one operator step
-                # that tells a contended host from a broken one, and
-                # ``LIES_QMD_LOCK_PATH`` can override it, so the path in
-                # the message is the only record of *which* inode was
-                # contended.
+                # The flock is resolvable, so name the inode: it is the one
+                # operator step that tells a contended host from a
+                # broken one, and ``LIES_QMD_LOCK_PATH`` can override it.
                 where = f" at {exc.lock_path}" if exc.lock_path else ""
                 message = (
                     f"qmd embed lock contention: another process holds the qmd flock{where} "

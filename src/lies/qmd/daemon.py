@@ -444,13 +444,9 @@ class QmdRecycleFailed(RuntimeError):
 
 
 #: Exceptions the readiness probe treats as "not serving yet".
-#:
-#: ``RuntimeError`` is required: fastmcp wraps every connect failure in a
-#: bare ``RuntimeError`` whose cause is a vendored ``httpx2`` error, which
-#: matches neither ``httpx.HTTPError`` nor ``OSError``. It is broad because
-#: ``QmdRecycleFailed`` *is* a ``RuntimeError`` — the ``raise`` sits below
-#: the guarded block, and ``tests/unit/qmd/test_daemon_recycle.py`` pins
-#: that shape.
+#: ``RuntimeError`` is required — fastmcp wraps a connect failure in a bare
+#: one whose cause is a vendored ``httpx2`` error — and is broad because
+#: ``QmdRecycleFailed`` *is* one; the ``raise`` sits below this block.
 _RECYCLE_PROBE_ERRORS = (httpx.HTTPError, mcp.MCPError, OSError, RuntimeError)
 
 

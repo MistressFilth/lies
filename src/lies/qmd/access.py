@@ -90,21 +90,19 @@ def _daemon_client(url: str) -> fastmcp.Client:
 # Matched by exception class *name*, not by httpx type: fastmcp vendors
 # its own httpx, so an LIES-side type check matches none of them.
 
-#: Names that mean "the daemon accepted the request and stopped answering".
-#: ``PoolTimeout`` is excluded on purpose: it means LIES' own concurrency
-#: exhausted the httpx pool (client-side), and ``recycle-raise`` on a
-#: machine-global daemon would kill other clients' in-flight work. It
-#: keeps the ``recycle-retry`` path via ``_TRANSPORT_NAMES``.
+#: The daemon accepted the request and stopped answering. ``PoolTimeout``
+#: is excluded on purpose: it means LIES' own concurrency exhausted the
+#: httpx pool, and recycling a machine-global daemon kills other
+#: clients' work. It keeps ``recycle-retry`` via ``_TRANSPORT_NAMES``.
 _WEDGE_NAMES = frozenset({"ReadTimeout", "WriteTimeout"})
 
 #: Names that mean "the daemon was not there".
 _TRANSPORT_NAMES = frozenset({"TransportError", "TimeoutException", "ConnectError"})
 
-#: Names that mean the *client* sent something the server rejected.
-#: ``LocalProtocolError`` is httpx's name for a malformed request; a retry
-#: is provably futile (the same bytes fail the same way). Treat as
-#: ``passthrough``. ``RemoteProtocolError`` is server-side and keeps the
-#: ``recycle-retry`` path.
+#: The *client* sent something the server rejected. ``LocalProtocolError``
+#: is httpx's name for a malformed request, and a retry is provably
+#: futile — the same bytes fail the same way. ``RemoteProtocolError`` is
+#: server-side and keeps the ``recycle-retry`` path.
 _LOCAL_PROTOCOL_NAMES = frozenset({"LocalProtocolError"})
 
 #: JSON-RPC code for session death under an in-flight call. Literal

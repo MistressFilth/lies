@@ -125,12 +125,9 @@ def _attempt_acquire(paths: tuple[Path, Path, Path], max_age_s: float) -> _Attem
         max_age_s=max_age_s,
         pid_path=pid_path,
         state_json_path=state_path,
-        # Re-entry is tracked by the depth counter, not by pid equality.
-        # A second *thread* or *task* of this process stores the same
-        # pid, so the default same-pid self-recovery would reap a lock
-        # this process is still holding and let both into the critical
-        # section — which is the CUDA reservation race this lock exists
-        # to prevent.
+        # Depth counter, not pid equality: a second thread of this
+        # process stores the same pid, so same-pid self-recovery would
+        # reap a lock this process still holds. See AGENTS.md.
         self_acquire_is_stale=False,
         # The caller prepared the parent once for the whole acquisition.
         # See ``_prepare`` below.
