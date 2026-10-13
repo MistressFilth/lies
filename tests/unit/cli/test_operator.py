@@ -1,12 +1,4 @@
-"""Tests for the operator escape-hatch subcommands (``lies flock qmd recycle``).
-
-The ``flock_app`` / ``_qmd_flock_app`` group has its own dedicated
-test file (``test_flock_qmd.py``); this file covers the operator
-escape-hatch subcommands that piggy-back on the same nested app.
-
-See ``AGENTS.md`` for the project's monkeypatch-at-the-lies-module-boundary
-testing convention.
-"""
+"""Operator escape-hatch subcommands; the flock group itself lives in ``test_flock_qmd.py``."""
 
 from __future__ import annotations
 
@@ -72,11 +64,7 @@ def test_lies_flock_qmd_recycle_invokes_recycle_helper(
 def test_lies_flock_qmd_recycle_exits_2_on_recycle_failed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`lies flock qmd recycle` exits 2 when recycle_qmd_daemon raises QmdRecycleFailed.
-
-    Also asserts the user-actionable error message lands on stderr so
-    operators can see why the recycle gave up.
-    """
+    """`lies flock qmd recycle` exits 2 when recycle_qmd_daemon raises QmdRecycleFailed."""
     from lies.qmd.daemon import QmdRecycleFailed, QmdState
 
     async def _fake_recycle_fails(**kwargs: object) -> QmdState:

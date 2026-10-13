@@ -1,39 +1,4 @@
-"""Integration tests for F3 synthesis file-back. Gated on INTEGRATION=1.
-
-Exercises the end-to-end file-back flow against a real wiki + real
-qmd daemon + cross-process flock:
-
-1. Two consecutive ``Orchestrator.run_query`` calls with the same
-   question produce a deterministic slug; the first creates a
-   synthesis page under ``wiki/<collection>/synthesis/<slug>.md`` and
-   the second updates it at the same path.
-2. A held cross-process flock across the call exhausts the
-   file-back retry budget (3 inline attempts) and surfaces a
-   ``file_back_failed_after_3_attempts`` error in the receipt.
-
-Run with:
-
-    INTEGRATION=1 pytest tests/integration/test_synthesis_file_back.py -v
-
-Without ``INTEGRATION=1``, the module skips cleanly so the test does
-not couple the unit suite to a live qmd daemon or to the cross-process
-flock. The lock-holding scenario uses the public
-:func:`acquire_create_lock` primitive + a subprocess holder (matching
-the ``tests/integration/test_memory_lock.py`` shape) — ``WikiMemoryService``
-offers ``_lock`` (an in-process ``threading.Lock``) but the cross-process
-flock the orchestrator's file-back path actually races is the
-``acquire_create_lock`` envelope, so that's what the busy scenario
-exercises.
-
-The librarian and synthesizer agent ``run_sync`` methods are stubbed
-at the per-instance boundary (matching the
-``tests/integration/test_tier2_query_path.py`` pattern) so pydantic-ai's
-``TestModel`` does not iterate the librarian's registered ``wiki_read``
-tool with random string args (which would surface ``WikiPageNotFound``
-before any synthesis runs). The canned ``LibrarianOutput`` exercises
-the F18 4-step contract shape; this test pins the F3 file-back envelope,
-not retrieval.
-"""
+"""F3 file-back against a live wiki + qmd daemon; gated on INTEGRATION=1."""
 
 from __future__ import annotations
 
@@ -222,18 +187,7 @@ def _stub_dispatch(
 def test_two_queries_with_same_question_collide_to_page_update(
     wiki_dir: Wiki, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """First query writes PageCreate; second writes PageUpdate at the same slug.
-
-    The deterministic slug derived from the question (``<sha256[:8]>-<text>``)
-    means the second ``run_query`` resolves to a ``PageUpdate`` against the
-    page the first call just created. Both file-receipts report zero
-    errors.
-
-    Both sub-agent ``run_sync`` calls are stubbed so pydantic-ai's
-    ``TestModel`` never reaches the librarian's ``wiki_read`` tool
-    (which would otherwise raise ``WikiPageNotFound`` on the random
-    page_ids ``TestModel`` invents during its first iteration).
-    """
+    """First query writes PageCreate; second writes PageUpdate at the same slug."""
     orch = Orchestrator(wiki=wiki_dir, models=models_for_tests(TestModel()))
     canned_lib = _canned_librarian_output(wiki_dir, page_count=2)
     canned_synth = _canned_synth_answer(canned_lib.excerpts)
@@ -317,20 +271,7 @@ def _wait_for_holder(ready_marker: Path, *, timeout: float = 10.0) -> None:
 def test_lock_busy_simulated_yields_three_attempts(
     wiki_dir: Wiki, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Held flock across the call → 3 inline attempts → ``file_back_failed_after_3_attempts``.
-
-    The holder subprocess takes the cross-process flock via the public
-    :func:`acquire_create_lock` primitive and keeps it for 15 s. While
-    the lock is held, ``WikiMemoryService.apply_plan`` raises
-    :class:`WikiLockBusy` on every attempt; ``Orchestrator.file_back_synthesis``
-    retries inline 3 times before returning a receipt whose
-    ``errors`` carry the documented ``file_back_failed_after_3_attempts``
-    marker.
-
-    Both sub-agent ``run_sync`` calls are stubbed so the filing-back
-    path is reached without an intervening LLM iteration against the
-    librarian's ``wiki_read`` tool.
-    """
+    """Held flock across the call → 3 inline attempts → ``file_back_failed_after_3_attempts``."""
     create_lock = wiki_dir.memory_create_lock_path
     pid_path = wiki_dir.memory_pid_path
     state_path = wiki_dir.memory_heartbeat_path

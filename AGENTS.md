@@ -876,7 +876,11 @@ The agents use `PromptedOutput`, not the default tool output:
 MiniMax-M3 ignores `tool_choice` and `response_format=json_schema` on
 both endpoints, so the schema goes in the instructions and the model's
 JSON text is parsed. `TestModel` cannot drive `PromptedOutput`, so those
-paths are covered by the integration suite, not by a unit test.
+paths are covered by the integration suite, not by a unit test. Stub the
+agent's `run_sync` **at the per-instance boundary** rather than letting
+`TestModel` iterate its registered tools: `TestModel` invents random
+`page_ids`, so a `wiki_read` call raises `WikiPageNotFound` before the
+code under test ever runs.
 
 ## The cross-process lock
 
@@ -897,6 +901,13 @@ not the wiki's data root, so no gitignore coordination is needed.
 Releases hand back the exact path set they acquired; a release that
 re-derived the paths could unlink a lock nobody holds and strand the
 `.pid` sidecar and `.state.json` heartbeat the next acquire reads.
+
+**The lock to race is `acquire_create_lock`, not `WikiMemoryService._lock`.**
+The service exposes `_lock` as an in-process `threading.Lock`, which no
+other process can see. Synthesis file-back is guarded by the
+`acquire_create_lock` envelope, so a busy-path test must hold *that*
+across a subprocess boundary — an in-process lock held in the test
+process would make the very contention it is asserting on impossible.
 
 ## Ingest invariants
 
