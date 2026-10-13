@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 """LibraryWriter: atomic-commit envelope for library mutations.
 
 Differences from the wiki-side write path:
@@ -12,9 +11,6 @@ Differences from the wiki-side write path:
   derived index, and embeds the collection vectors. Failures are
   non-fatal (the library commit already landed).
 """
-=======
-"""LibraryWriter: atomic-commit envelope for library mutations."""
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
 
 from __future__ import annotations
 
@@ -49,7 +45,6 @@ if TYPE_CHECKING:
 
 
 def __getattr__(name: str):
-<<<<<<< HEAD
     """Lazy import of qmd CLI helpers — keeps ``import lies.cli`` cheap.
 
     Importing :mod:`lies.qmd.cli` pulls in :mod:`pydantic_ai` +
@@ -65,9 +60,6 @@ def __getattr__(name: str):
     still work because :func:`mock.patch` triggers this ``__getattr__`` on
     its initial ``getattr``, then ``setattr``s the patched version.
     """
-=======
-    """Lazy import of qmd CLI helpers — keeps ``import lies.cli`` cheap."""
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     if name in {
         "qmd_collection_add_or_update",
         "qmd_update",
@@ -89,18 +81,11 @@ def __getattr__(name: str):
 class LibraryWriter:
     def __init__(self, library: Library) -> None:
         self._library = library
-<<<<<<< HEAD
         # Idempotent git repo bootstrap. A fresh library directory
         # (no ``.git``) gets a bootstrapped repo on first writer
         # creation so the atomic-commit envelope can land; without it the
         # first ``lies ingest`` writes mirror files to disk and then
         # raises ``LibraryAtomicCommitFailed`` at the ``git add`` step.
-=======
-        # Idempotent git bootstrap: a fresh library (no ``.git``) gets a repo on first
-        # writer creation so the atomic-commit envelope can land. An existing ``.git``
-        # short-circuits. Without it the first ``lies ingest`` raised
-        # ``LibraryAtomicCommitFailed`` at ``git add`` with the CLI still exiting 0.
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
         if not (library.git_root / ".git").exists():
             self._bootstrap_git_repo()
 
@@ -168,18 +153,12 @@ class LibraryWriter:
         catalog_updates: Iterable[LibraryCatalogPage] = (),
         qmd_collection: str | None = None,
     ) -> str | None:
-<<<<<<< HEAD
         # Accept both absolute and relative paths. Absolute paths
         # are coerced via ``relative_to(git_root)``; callers that
         # already pass repo-relative strings (or paths) round-trip
         # unchanged. A path that escapes ``git_root`` raises a typed
         # ``LibraryAtomicCommitFailed`` rather than being stringified,
         # which would misclassify a caller mistake as a commit failure.
-=======
-        # Accept absolute and relative paths: absolutes coerce via ``relative_to``.
-        # A path escaping ``git_root`` raises a typed ``LibraryAtomicCommitFailed``
-        # rather than being stringified — a caller mistake is not a commit failure.
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
         rel_paths: list[str] = []
         for p in paths:
             if isinstance(p, str):
@@ -200,7 +179,6 @@ class LibraryWriter:
             rel_paths.append(str(rel))
         updates = list(catalog_updates)
 
-<<<<<<< HEAD
         # Symmetric short-circuit. ``atomic_commit`` rejects
         # ``files=[]`` as a programming error, so we cannot fall through
         # when one side of the envelope is empty. Two cases:
@@ -210,12 +188,6 @@ class LibraryWriter:
         #     so the catalog-side state stays consistent, then None.
         #
         # This mirrors the wiki-side ``WikiMemoryService.apply_plan`` envelope.
-=======
-        # Symmetric short-circuit, because ``atomic_commit`` rejects ``files=[]``.
-        # Both sides empty is a true no-op (return None); ``rel_paths=[]`` with
-        # updates is a catalog-only write, so the upsert still runs and then None —
-        # mirroring the wiki-side ``apply_plan`` envelope.
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
         if not rel_paths and not updates:
             return None
         if not rel_paths:
@@ -240,7 +212,6 @@ class LibraryWriter:
         if updates:
             self._upsert_catalog(updates)
 
-<<<<<<< HEAD
         # Reconcile deletions: ``atomic_commit`` runs ``git add -- <files>``
         # for the explicit paths only, so a tracked file that was previously
         # committed and then deleted from disk is never staged, and every
@@ -248,12 +219,6 @@ class LibraryWriter:
         # ``-A``) stages only modifications and deletions of already-tracked
         # files, leaving new untracked files alone — ``-A`` would also pick
         # up files the writer does not claim.
-=======
-        # Reconcile deletions: ``atomic_commit`` stages the explicit paths only, so a
-        # tracked file deleted from disk never gets staged and every re-ingest
-        # accumulates ghosts in HEAD. ``git add -u`` stages modifications and
-        # deletions of tracked files, leaving untracked ones to the caller.
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
         if sha is not None:
             try:
                 subprocess.run(
@@ -315,7 +280,6 @@ class LibraryWriter:
                             stacklevel=2,
                         )
 
-<<<<<<< HEAD
         # Mark that a library has been written since the qmd daemon started.
         # Touched at the machine-global path so the daemon's staleness check
         # reflects the union of every library + wiki write envelope, not just
@@ -323,12 +287,6 @@ class LibraryWriter:
         # exist on a fresh install, so mkdir -p it first. Goes BEFORE the qmd
         # post-commit hook so the daemon's mtime-vs-marker comparison sees
         # this commit's mtime, not the hook's.
-=======
-        # Touch the machine-global qmd last-write-marker so the daemon's staleness
-        # check reflects every library + wiki write, not just this git_root.
-        # Best-effort and idempotent; mkdir -p first. Goes BEFORE the qmd
-        # post-commit hook so the mtime comparison sees this commit, not the hook's.
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
         if sha is not None:
             try:
                 _cache = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
@@ -338,7 +296,6 @@ class LibraryWriter:
             except OSError:
                 pass  # F14 is best-effort; do not fail the commit
 
-<<<<<<< HEAD
         # Post-commit qmd hook. Failures are non-fatal — the library
         # commit already landed and is authoritative. Skip on a no-op commit
         # (sha is None) since there is nothing new to register.
@@ -359,17 +316,6 @@ class LibraryWriter:
             # is just a fallback used when ``library_target`` is not set.
             # Passing a deliberately distinct value lets the wire test
             # distinguish the positional from the kwarg.
-=======
-        # Post-commit qmd hook, mirroring the wiki-side write.py contract. Failures
-        # are non-fatal: the commit already landed and is authoritative. Skipped on
-        # a no-op commit (sha is None). Bare-name resolution matters — the helpers
-        # are :PEP:`562` lazy, and ``LOAD_GLOBAL`` skips ``__getattr__``; see ``lies.cli.page``.
-        if sha is not None and qmd_collection is not None:
-            coll_dir = self._library.collections_root / qmd_collection
-            # Positional ``path`` is the library ``collections_root``, not ``coll_dir``;
-            # the hook resolves the registered path via ``library_target``. A deliberately
-            # distinct value lets the wire test catch a dropped ``library_target``.
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
             _qaou = globals().get("qmd_collection_add_or_update") or __getattr__(
                 "qmd_collection_add_or_update"
             )
@@ -399,7 +345,6 @@ class LibraryWriter:
             try:
                 _qemb(self._library.git_root, qmd_collection)
             except QmdLockBusy as exc:
-<<<<<<< HEAD
                 # Re-raise with the spec-mandated message that names the
                 # holder PID and tells the operator to wait-and-retry, so the
                 # agent sees an actionable message instead of
@@ -407,12 +352,6 @@ class LibraryWriter:
                 # The format is guarded against ``waited_s``/``max_s``/
                 # ``holder_pid`` being ``None`` (the type signature accepts
                 # None for translation paths like ``WikiFlockIndeterminate``).
-=======
-                # Re-raise with the spec-mandated message naming the holder PID and
-                # wait-and-retry, so the agent sees an actionable error. The format is
-                # guarded against ``None`` fields: today's ``_acquire_with_poll`` always
-                # populates floats, but a non-timeout source could crash the re-raise.
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
                 waited_str = f"{exc.waited_s:.1f}" if exc.waited_s is not None else "unknown"
                 max_str = f"{exc.max_s:.0f}" if exc.max_s is not None else "unknown"
                 holder_str = str(exc.holder_pid) if exc.holder_pid is not None else "unknown"

@@ -53,7 +53,6 @@ class CitationSnippet:
 
 @dataclass(frozen=True)
 class ArchivistDigest:
-<<<<<<< HEAD
     """The grounding archivist's return value.
 
     Attributes:
@@ -85,11 +84,6 @@ class ArchivistDigest:
             of the failure. It exists because ``transient`` says *that*
             retrieval failed, not *how*: a wedged daemon and a contended
             lock want different operator actions.
-=======
-    """The grounding archivist's return value. See "Data shapes" in AGENTS.md for
-    the field contract, including why ``no_coverage`` and ``transient`` are
-    independent and why ``searched_scope`` is disjoint from ``unserved_scope``.
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     """
 
     question: str

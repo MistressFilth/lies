@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 """Synthesize tool: prose answer for human reading.
 
 Two entry points. :func:`synthesize` calls
@@ -10,9 +9,6 @@ runs the F18 librarian agent's Classify → Search → Read → Return
 pipeline before the synthesizer. Both return a
 :class:`SynthesizeEnvelope` carrying the prose body and citations.
 """
-=======
-"""Synthesize tool: prose answer for human reading."""
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
 
 from __future__ import annotations
 
@@ -125,18 +121,11 @@ async def synthesize(
         top_k=10,  # more context for the synthesizer
     )
 
-<<<<<<< HEAD
     # 2. The retrieval did not finish → inconclusive, not empty. A
     # dispatch failure and a clean miss both arrive with zero citations,
     # and collapsing them tells the user their library has nothing when
     # the process is at fault. ``fallback_reason`` carries the digest's
     # own reason; only ``ground()`` knows which failure this was.
-=======
-    # The retrieval did not finish → inconclusive, not empty. This is why
-    # ``ArchivistDigest.transient`` exists: a dispatch failure and a clean miss both arrive
-    # with zero citations, and collapsing them tells the user their library has nothing
-    # when the process is at fault.
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
     if digest.transient:
         return SynthesizeEnvelope(
             question=question,
@@ -217,16 +206,10 @@ async def synthesize(
             fallback_reason=f"{type(exc).__name__}: {exc}",
         )
 
-<<<<<<< HEAD
     # 7. Run the synthesizer agent.
     #
     # ``Agent.run_sync`` shells through ``asyncio.run``, which raises inside a
     # running loop, so call the async ``agent.run`` directly.
-=======
-    # Run the synthesizer agent. ``synthesize`` is ``async`` so it can ``await ground()``
-    # from inside the daemon's loop; ``Agent.run_sync`` shells through ``asyncio.run``,
-    # which raises when a loop is already running. Call the async ``agent.run`` directly.
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
     try:
         agent = query_synthesizer_agent(model=model)
         result = await agent.run(question, deps=deps)
@@ -296,15 +279,12 @@ def _resolve_librarian_model():
 def librarian_agent_run(deps: Any) -> Any:
     """Runs the librarian subagent's ``run_sync`` and returns the LibrarianOutput.
 
-<<<<<<< HEAD
     Builds a fresh librarian agent, wires the MCP-backed tools and
     invokes ``run_sync`` with the supplied deps. The bundle passes
     through :func:`~lies.agents.librarian.with_search_diagnostics`, so
     its ``transient`` / ``fallback_reason`` are reconciled against the
     recorded search verdict rather than the model's copy alone.
 
-=======
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     Args:
         deps: :class:`LibrarianDeps` carrying question / tag_expr /
             exclude_expr / top_k.
@@ -334,7 +314,6 @@ def librarian_agent_run(deps: Any) -> Any:
     try:
         result = agent.run_sync(deps.question, deps=deps)
     except Exception as exc:
-<<<<<<< HEAD
         # Fail-soft: pydantic-ai raises (e.g.
         # ``UsageLimitExceeded``) when the librarian LLM cannot produce a
         # valid ``LibrarianOutput`` after its retry budget, and the MCP
@@ -351,12 +330,6 @@ def librarian_agent_run(deps: Any) -> Any:
         # The bundle still goes through ``with_search_diagnostics``:
         # ``run_sync`` raising does not un-happen a search the model
         # already ran, and a recorded reason names the remedy.
-=======
-        # Fail-soft: pydantic-ai raises (e.g. ``UsageLimitExceeded``) when the librarian LLM
-        # cannot produce a valid ``LibrarianOutput``. Return an honest gap envelope: empty
-        # excerpts, ``transient=True``, ``no_coverage=False``. The LLM never ran, so this is a
-        # fact about the run; naming a corpus problem for it would be a lie.
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
         log.warning(
             "librarian_agent_run: dispatch failed (%s: %s); returning transient fallback",
             type(exc).__name__,
@@ -376,14 +349,8 @@ def librarian_agent_run(deps: Any) -> Any:
             diagnostics,
         )
     out = result.output
-<<<<<<< HEAD
     # Forward-compat guard: a future pydantic model in place of the
     # dataclass still yields a dataclass-shaped bundle.
-=======
-    # Defensive: ``output_type=LibrarianOutput`` means ``out`` already is one. The
-    # ``isinstance`` check is forward-compat against a future pydantic model, and the
-    # conversion keeps the public surface dataclass-shaped for consumers.
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
     if isinstance(out, LibrarianOutput):
         bundle = out
     else:
@@ -405,13 +372,10 @@ def librarian_agent_run(deps: Any) -> Any:
 def synthesizer_agent_run(librarian_output: Any, question: str) -> Any:
     """Run the synthesizer subagent's ``run_sync`` and return its answer.
 
-<<<<<<< HEAD
     Builds a fresh synthesizer agent, wires the librarian's excerpt
     bundle as :class:`QueryDeps`, and returns the typed
     :class:`QueryAnswer`.
 
-=======
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     Args:
         librarian_output: :class:`LibrarianOutput` from
             :func:`librarian_agent_run`.
@@ -591,14 +555,7 @@ def _ask_impl(
     )
 
 
-<<<<<<< HEAD
 # Wrap as a FastMCP ``Tool`` so the MCP wire can serialize the
 # dispatch surface and tests can reach the underlying function via
 # ``lib_ask.fn(...)``.
-=======
-# Wrap as a FastMCP ``Tool`` so the wire can serialize the dispatch surface and tests
-# can reach the function via ``lib_ask.fn(...)``, mirroring ``search.py`` and
-# ``read.py``. The Tool is constructed here so ``lib_ask.fn`` is callable without an
-# MCP instance.
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
 lib_ask = Tool.from_function(_ask_impl, name="lib_ask")

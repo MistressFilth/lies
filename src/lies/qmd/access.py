@@ -85,7 +85,6 @@ def _daemon_client(url: str) -> fastmcp.Client:
     )
 
 
-<<<<<<< HEAD
 # --- the taxonomy ------------------------------------------------------
 #
 # Matched by exception class *name*, not by httpx type: fastmcp vendors
@@ -96,33 +95,16 @@ def _daemon_client(url: str) -> fastmcp.Client:
 #: exhausted the httpx pool (client-side), and ``recycle-raise`` on a
 #: machine-global daemon would kill other clients' in-flight work. It
 #: keeps the ``recycle-retry`` path via ``_TRANSPORT_NAMES``.
-=======
-# The taxonomy. Matched against exception class *names* (fastmcp vendors its own
-# httpx as ``httpx2``). A dead session arrives as a bare ``RuntimeError`` with the real
-# error on ``__cause__``; ``_transport_cause`` follows the chain.
-
-# Names that mean "the daemon accepted the request and stopped answering".
-# ``PoolTimeout`` is excluded: it means LIES' own concurrency exhausted the httpx pool
-# (client-side state), and ``recycle-raise`` would kill other clients' in-flight work. It
-# keeps ``recycle-retry`` through ``_TRANSPORT_NAMES``.
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
 _WEDGE_NAMES = frozenset({"ReadTimeout", "WriteTimeout"})
 
 #: Names that mean "the daemon was not there".
 _TRANSPORT_NAMES = frozenset({"TransportError", "TimeoutException", "ConnectError"})
 
-<<<<<<< HEAD
 #: Names that mean the *client* sent something the server rejected.
 #: ``LocalProtocolError`` is httpx's name for a malformed request; a retry
 #: is provably futile (the same bytes fail the same way). Treat as
 #: ``passthrough``. ``RemoteProtocolError`` is server-side and keeps the
 #: ``recycle-retry`` path.
-=======
-# Names that mean the *client* sent something the server rejected. A retry is provably
-# futile (the same bytes fail the same way) and a recycle kills other clients' work on a
-# machine-global daemon, so treat ``LocalProtocolError`` as ``passthrough`` like the
-# server-state ``HTTPStatusError``. ``RemoteProtocolError`` keeps ``recycle-retry``.
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
 _LOCAL_PROTOCOL_NAMES = frozenset({"LocalProtocolError"})
 
 #: JSON-RPC code for session death under an in-flight call. Literal
@@ -168,13 +150,10 @@ def _transport_cause(exc: BaseException) -> Exception | None:
 def classify_call_error(exc: Exception) -> tuple[str, bool]:
     """Classifies a failed daemon call as ``(action, retryable)``.
 
-<<<<<<< HEAD
     ``action`` is ``"recycle-raise"`` (wedged), ``"recycle-retry"``
     (unreachable) or ``"passthrough"``. Order matters: a read timeout is
     also a transport error, so the wedge case is decided first.
 
-=======
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     Args:
         exc: Class name and ``__cause__`` chain — httpx types are not.
 
@@ -201,7 +180,6 @@ def classify_call_error(exc: Exception) -> tuple[str, bool]:
 async def qmd_collection_names() -> frozenset[str]:
     """The collection set the daemon is currently serving.
 
-<<<<<<< HEAD
     Reads the daemon's ``status`` tool; there is no daemon-side
     invalidation signal, so nothing is cached.
 
@@ -212,15 +190,6 @@ async def qmd_collection_names() -> frozenset[str]:
     Raises:
         QmdDaemonUnavailable: The daemon is not serving.
         QmdDaemonWedged: The daemon accepted the call and stopped answering.
-=======
-    Returns:
-        Frozen set of serving names. Empty when the structured ``collections``
-        field is absent or malformed; both ``list[str]`` and ``list[dict]`` are
-        accepted, so a daemon schema change does not lock the caller.
-
-    Raises:
-        QmdDaemonUnavailable: not serving. QmdDaemonWedged: stopped answering.
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     """
     result = await daemon_tool("status", {})
     structured = getattr(result, "structured_content", None) or {}
@@ -243,31 +212,20 @@ async def qmd_collection_names() -> frozenset[str]:
 async def validate_scope(scope: list[str]) -> tuple[list[str], list[str]]:
     """Validates ``scope`` against the daemon's binding collection set.
 
-<<<<<<< HEAD
     The daemon answers an unknown collection with an empty result and
     no error, so a batched query carrying one unresolvable name silently
     returns zero rows.
 
-=======
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     Args:
         scope: Collection names drawn from the LIES registry or any resolver.
 
     Returns:
-<<<<<<< HEAD
         ``(validated, unknown)`` — the served subset and the absent
         names, both in input order and mutually disjoint.
 
     Raises:
         QmdDaemonUnavailable: The daemon is not serving.
         QmdDaemonWedged: The daemon accepted the call and stopped answering.
-=======
-        ``(validated, unknown)``, both in input order and disjoint: the subset the
-        daemon reports serving, and the names absent from its ``status``.
-
-    Raises:
-        QmdDaemonUnavailable: not serving. QmdDaemonWedged: stopped answering.
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     """
     if not scope:
         return [], []
@@ -307,7 +265,6 @@ async def daemon_tool(
         The raw ``CallToolResult``; ``.content`` for ``get``/``multi_get``.
 
     Raises:
-<<<<<<< HEAD
         ValueError: Not a daemon tool.
         QmdDaemonUnavailable: Not serving.
         QmdDaemonWedged: Stopped answering.
@@ -340,10 +297,6 @@ async def _call_daemon_tool(
         QmdDaemonUnavailable: Not serving.
         QmdDaemonWedged: Stopped answering.
         RuntimeError: Tool error.
-=======
-        ValueError (not a daemon tool), QmdDaemonUnavailable, QmdDaemonWedged,
-        RuntimeError (tool error).
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     """
     if name not in DAEMON_TOOLS:
         raise ValueError(
@@ -379,7 +332,6 @@ async def _call_with_recovery(
 ) -> Any:
     """Runs ``make_call`` with the taxonomy applied to any failure.
 
-<<<<<<< HEAD
     The single place a daemon failure is classified; a site that calls
     ``client.call_tool`` directly bypasses it.
 
@@ -389,27 +341,17 @@ async def _call_with_recovery(
         make_call: Zero-argument callable returning the awaitable.
             Invoked once, and a second time only after a recycle on a
             retryable failure.
-=======
-    Args:
-        url: Daemon URL; ``name``: tool name. Both reach the raise text.
-        make_call: Zero-argument callable returning the awaitable, invoked once and a
-            second time only after a recycle on a retryable failure.
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
 
     Returns:
         Whatever ``make_call`` returns.
 
     Raises:
-<<<<<<< HEAD
         QmdDaemonWedged: The daemon accepted the call and stopped
             answering, before or after a recycle.
         QmdDaemonUnavailable: Not serving, or still not serving after one
             recycle-and-retry.
         Exception: Re-raised unchanged for a ``"passthrough"`` class, and
             for a second failure the taxonomy does not own.
-=======
-        QmdDaemonWedged, QmdDaemonUnavailable; anything else re-raises unchanged.
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     """
     try:
         return await make_call()
@@ -517,31 +459,19 @@ async def read_library_bodies(
 ) -> list[Any]:
     """Issues one ``get`` per path over a single MCP session.
 
-<<<<<<< HEAD
     Hoists the handshake out of the per-path loop. One ``get`` per path
     is deliberate: ``multi_get`` silently skips 10KB+ documents.
 
-=======
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     Args:
         paths: Library paths (``<collection>/<page>``); ``timeout`` is the read deadline.
 
     Returns:
-<<<<<<< HEAD
         One entry per path, in input order: the ``CallToolResult``, or
         ``None`` for a per-path failure so its siblings survive.
 
     Raises:
         QmdDaemonUnavailable: The daemon is not serving.
         QmdDaemonWedged: The session wedged; the parent tool decides.
-=======
-        Results in input order; ``.content`` carries the body or a skip notice, and a
-        per-path failure maps to ``None`` so siblings survive. Both channels qmd uses
-        for "no body" are result shapes rather than exceptions, and are both ``None``.
-
-    Raises:
-        QmdDaemonUnavailable: not serving. QmdDaemonWedged: session wedge.
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     """
     if not paths:
         return []
@@ -565,15 +495,8 @@ async def read_library_bodies(
             except _DAEMON_FAILURES:
                 raise
             except Exception as exc:
-<<<<<<< HEAD
                 # What reaches here is a ``"passthrough"`` class: the
                 # daemon is serving and this one request was bad.
-=======
-                # The taxonomy owns every transport failure, so what reaches here is a ``passthrough``
-                # class: the daemon is serving and this one request was bad — genuinely per-path, so
-                # siblings survive. A bug raised here is not; see the test pinning a transport error to a
-                # raise rather than a ``None``.
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
                 _log.warning("read: qmd get(%s) failed per-path: %s", path, exc)
                 out.append(None)
                 continue

@@ -185,45 +185,9 @@ def _acquire_with_poll(
     deadline = time.monotonic() + retry_budget_s
     started_at = time.monotonic()
     while True:
-<<<<<<< HEAD
         attempt = _attempt_acquire(lock_paths, max_age_s)
         if attempt.outcome == "won":
             return attempt
-=======
-        result = acquire_create_lock(
-            lock_path,
-            max_age_s=max_age_s,
-            pid_path=pid_path,
-            state_json_path=state_path,
-            # Re-entry is tracked by the depth counter above, not by pid equality. A second *thread*
-            # of this process stores the same pid, so same-pid self-recovery would reap a lock this
-            # thread still holds and let both into the critical section — the CUDA reservation race
-            # this lock exists to prevent.
-            self_acquire_is_stale=False,
-        )
-        if result is None:
-            # Defensive: only reached if ``exclusive.py`` raises
-            # the non-envelope ``None``-on-busy.
-            if time.monotonic() >= deadline:
-                raise QmdLockBusy(
-                    waited_s=time.monotonic() - started_at,
-                    max_s=retry_budget_s,
-                )
-            time.sleep(_POLL_INTERVAL_S)
-            continue
-
-        if result.status in ("acquired", "dead_reaped"):
-            _register_holder(result.fd)
-            return result.fd
-
-        if result.status == "indeterminate":
-            raise WikiFlockIndeterminate(
-                f"qmd lock holder pid {result.holder_pid} indeterminate; "
-                f"run `lies flock qmd force-repair`"
-            )
-
-        # status == "busy"
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
         if time.monotonic() >= deadline:
             raise QmdLockBusy(
                 holder_pid=attempt.holder_pid,
@@ -289,7 +253,6 @@ def with_qmd_lock(
     timeout_s: float = 30.0,
     max_age_s: float = 1800.0,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-<<<<<<< HEAD
     """Decorator factory; each invocation holds the qmd site-wide flock for
     the duration of the wrapped call.
 
@@ -302,18 +265,6 @@ def with_qmd_lock(
 
     Reentrant on the same context, because some helpers compose: an
     outer call would otherwise poll an inner one to a timeout.
-=======
-    """Decorator factory holding the qmd site-wide flock for the wrapped call.
-
-    Args:
-        timeout_s: Wall-clock seconds to poll-retry when contended; ``QmdLockBusy``
-            past this. Default 30 s.
-        max_age_s: Staleness budget — a contending holder whose heartbeat is older
-            and whose pid is dead is reaped and retried. Default 1800 s.
-
-    Reentrant on the same context, so a nested call does not re-acquire. The path is
-    resolved per acquisition, which is what makes the nesting visible.
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     """
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:

@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 """search MCP tool — single-batch hybrid qmd query against the daemon.
 
 The read path goes through ``lies.qmd.access.daemon_tool`` so the
@@ -13,9 +12,6 @@ A *down* daemon (``QmdDaemonUnavailable``) is re-raised so the operator
 must act; folding it into ``no_coverage=True`` is the silent-failure
 mode this module exists to remove.
 """
-=======
-"""search MCP tool — single-batch hybrid qmd query against the daemon."""
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
 
 from __future__ import annotations
 
@@ -53,7 +49,6 @@ def _decode(stderr: bytes | str) -> str:
 
 
 def _resolve_tag_collections(tag_expr: str | None) -> tuple[list[str], list[str]]:
-<<<<<<< HEAD
     """Resolve ``tag_expr`` body to ``(resolved_collections, unknown_tags)``.
 
     An atom with no qualifier names a tag; ``t:`` says so explicitly and
@@ -72,9 +67,6 @@ def _resolve_tag_collections(tag_expr: str | None) -> tuple[list[str], list[str]
     its scope was refused rather than being handed a search over the
     whole library it did not ask for. Returns ``sorted`` for determinism.
     """
-=======
-    """Resolve ``tag_expr`` body to ``(resolved_collections, unknown_tags)``."""
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     if tag_expr is None:
         return [], []
     # Imported here: ``mcp.server`` imports this module.
@@ -239,18 +231,11 @@ def _search_impl(
         }
 
     if not scope:
-<<<<<<< HEAD
         # ``tag_expr is None`` widens to the whole library — the
         # caller did not narrow, so every collection is in scope. A
         # ``tag_expr`` that resolved to nothing is a real scope miss:
         # widening silently would answer from the whole library with no
         # word to the user about the dropped tag.
-=======
-        # ``tag_expr is None`` widens to the whole library — the caller did not narrow. A
-        # ``tag_expr`` that resolved to nothing is a real scope miss: a tag-only filter (e.g.
-        # ``t:foo``) drops ``t:``-qualified atoms by design, and widening silently would answer
-        # from the whole library with no word about the dropped tag.
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
         if tag_expr is not None:
             return {
                 "hit": None,
@@ -276,18 +261,11 @@ def _search_impl(
             "fallback_reason": "no collections registered",
         }
 
-<<<<<<< HEAD
     # Pre-check against the daemon: the daemon answers an unknown
     # collection with an empty result and **no error**. A name in the
     # LIES registry can be absent from qmd; the daemon's ``status`` is
     # the binding truth. ``validate_scope`` is the shared seam so
     # ``search`` and ``ground`` cannot drift on this rule.
-=======
-    # Pre-check against the daemon: it answers an unknown collection with an empty result and
-    # **no error**. A name in the LIES registry can be absent from qmd (or dropped by ``qmd
-    # cleanup``), and the daemon's ``status`` is the binding truth. ``validate_scope`` is the
-    # shared seam so ``search`` and ``ground`` cannot drift on this rule.
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
     try:
         scope, unknown = _validate_scope_blocking(scope)
     except access.QmdDaemonUnavailable:
@@ -335,18 +313,11 @@ def _search_impl(
             "fallback_reason": f"qmd wedged; recycling did not help{detail}",
         }
     except QmdTimeoutError as exc:
-<<<<<<< HEAD
         # CLI-side timeout fallback — does not fire on this path today.
         # The seam raises ``QmdDaemonWedged`` for a daemon-side timeout,
         # which is caught above; ``QmdTimeoutError`` is a CLI-only class.
         # The honest answer is ``transient=True, no_coverage=False``
         # regardless.
-=======
-        # CLI-side timeout fallback; does not fire on this path today. The seam raises
-        # ``QmdDaemonWedged`` (recycle-and-raise) for a daemon-side timeout, caught above;
-        # ``QmdTimeoutError`` is CLI-only and would surface only if a future change re-routed this
-        # call to a subprocess. The honest answer is ``transient=True, no_coverage=False``.
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
         detail = ""
         if exc.stderr:
             detail = f"; last qmd output: {_decode(exc.stderr)!r}"
@@ -396,18 +367,11 @@ def _search_impl(
     no_coverage = not hits
     hit = hits[0] if hits else None
 
-<<<<<<< HEAD
     # A registered-but-empty collection is in the daemon's collection
     # list with zero documents, so the search against it returns zero
     # hits, which a caller reading ``no_coverage=True`` would read as
     # "the corpus has nothing". The honest answer keeps
     # ``no_coverage=True`` and names the empty collection.
-=======
-    # A registered-but-empty collection (``wiki_default``, 0 files) sits in the daemon's
-    # list with zero documents, so the search returns zero hits that a caller would read as
-    # "the corpus has nothing". Keep ``no_coverage=True`` and add a ``fallback_reason`` naming
-    # the empty collection. Only fires on a single known-but-empty collection.
->>>>>>> ff22413 (docs(src): bring every body comment block within the 4-line budget)
     if no_coverage and len(scope) == 1:
         from lies.library.registry import library_collection_names
 

@@ -63,7 +63,6 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
     self_acquire_is_stale: bool = True,
     parent_prepared: bool = False,
 ) -> AcquireResult | None:
-<<<<<<< HEAD
     """Atomically create ``path``. Return ``AcquireResult`` on win, ``None`` on contention.
 
     Optional ``pid_path`` + ``state_json_path``: if provided, treat an
@@ -117,9 +116,6 @@ def acquire_create_lock(  # type: ignore[no-untyped-def]
     The fd is left open so the OS holds the inode reference; the caller
     must pass it to :func:`release_create_lock`.
     """
-=======
-    """Atomically create ``path``. Return ``AcquireResult`` on win, ``None`` on contention."""
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
     if pid_alive_fn is None:
 
         def pid_alive_fn(

@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 """Ensure and inspect qmd's own MCP daemon.
 
 qmd owns its lifecycle: ``qmd mcp --http --daemon`` is idempotent and
@@ -11,9 +10,6 @@ records a different scope than the one about to be served.
 Every function here is non-fatal: failures are reported through
 :class:`QmdState` rather than raised.
 """
-=======
-"""Ensure and inspect qmd's own MCP daemon."""
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
 
 from __future__ import annotations
 

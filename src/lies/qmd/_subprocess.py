@@ -97,7 +97,6 @@ def _run_qmd(
     """Run a qmd subprocess with DEVNULL stdin and bounded stderr capture.
 
     Args:
-<<<<<<< HEAD
         args: argv list. First entry is the qmd binary path.
         cwd: working directory.
         timeout: seconds before SIGKILL.
@@ -106,10 +105,6 @@ def _run_qmd(
             ``NO_COLOR`` survives an override and the child keeps the
             operator's environment by default. Empty by default, which
             is today's behaviour exactly.
-=======
-        args: argv list; ``args[0]`` is the qmd binary path. ``cwd``: working
-            directory. ``timeout``: seconds before SIGKILL.
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
 
     Returns:
         A ``CompletedProcess`` with stdout bytes and stderr truncated to

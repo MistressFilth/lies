@@ -784,7 +784,6 @@ infer from the field name or its type.
 - **`ArchivistDigest`** — `no_coverage` is true only when the dispatch
   *succeeds* and returns zero hits. `transient` marks *dispatch*
   failures, so a caller can distinguish "the daemon failed" from "the
-<<<<<<< HEAD
   corpus has nothing".
 - **`Citation.source` on `lib_ask` is model-asserted, not verified.**
   `synth._ask_impl` applies no citation validation: the orchestrator's
@@ -799,26 +798,6 @@ infer from the field name or its type.
   emitted none at all. `heading_path=None` is contract-correct under the
   rule above. A caller that needs the citation to be real must resolve
   it through `read`.
-=======
-  corpus has nothing". The two are independent: `no_coverage=False,
-  transient=True` is a slow or failed retrieval, not an empty corpus.
-  `searched_scope` is what was actually dispatched and `unserved_scope`
-  what the daemon does not serve; they are disjoint, and a digest with an
-  empty `searched_scope` searched nothing — which is not a corpus claim.
-- **`LibrarianOutput` / `LibrarianDeps`** — `no_coverage` is populated by
-  the LLM from the `search` envelope and passed through unchanged;
-  `transient` reports a fact about the run and is what keeps a model
-  outage from being rendered as "no relevant content in library". Both
-  `tag_expr` and `exclude_expr` carry compiled `TagExpr` ASTs, not flat
-  strings, because the grammar accepts compound (`+c:a&c:b`, `+c:a|c:b`).
-- **`SynthesizedAnswer`** — `answer`'s shape matches `format` (`md`,
-  `table`, `marp`, `chart`); a `format_hint` that does not parse is
-  silently demoted to `md`, so `format` is the only field a renderer
-  should dispatch on. `synthesis_used` (did the agent write the body) is
-  independent of `fallback_used` (did retrieval fall back).
-  `pages_read` is the retrieved set, not the cited subset. `page_links`
-  is ready-made `[Title](path)` markup.
->>>>>>> 7f2597a (docs(src): bring every code docstring within the 12-line budget)
 
 All forward-only; additive fields default to safe sentinels.
 
