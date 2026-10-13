@@ -20,6 +20,42 @@ rule rather than the accident.
 
 ### Fixed
 
+- **Four tests failed on CI only, because `make test` runs neither
+  `--runslow` nor `INTEGRATION=1` — the two gates CI actually uses.**
+  `test_lies_flock_qmd_recycle_invokes_recycle_helper` was a real defect
+  this branch introduced: `recycle_qmd_daemon`'s keyword-only `data_dir=`
+  was renamed to `scope=`, and the test's fake still declared the old
+  name, so the CLI's call raised `TypeError`. The other three were the
+  throwaway-spawn tests, whose "nothing is listening" was qmd's *name*
+  bind (see below) and not a daemon that failed to start.
+
+- **qmd's HTTP daemon binds `localhost`, so probing it by IPv4 literal
+  is wrong on any host that resolves `localhost` IPv6-first.** qmd
+  reads `options.host ?? process.env.QMD_HOST ?? "localhost"` and
+  calls `listen(port, host)`; `--port` selects the port and nothing
+  else. On the CI runner that resolved to `[::1]`, so qmd logged
+  `listening on http://localhost:57703/mcp` on the port the test
+  requested while `connect(("127.0.0.1", 57703))` was refused —
+  reproducing a "daemon did not start" report for a daemon that was up
+  and serving. The throwaway-spawn tests now probe the name qmd binds.
+  The failure message also carries qmd's version, the throwaway cache
+  root, the pidfile, the recorded pid's `/proc` cmdline and qmd's own
+  `mcp.log`, because that log states the URL the daemon actually
+  reached — which is the one fact that separates *did not start* from
+  *started somewhere else*, and the previous message distinguished
+  neither.
+
+- **The recycle-ceiling harness's grace-window bound asserted the
+  runner's timer, not the reap's behaviour.** `GRACE_COST_S` capped the
+  grace row at 6 s, but the harness's window is 20 ms wide and polls
+  every 0.5 ms, so a host that cannot return from a 0.5 ms sleep in
+  under 20 ms measures each window as one sleep long — 27.7 s at real
+  scale on the CI runner, against ~4 s on an idle host. The reap itself
+  is correct and unchanged; the ceiling is now derived from the timer
+  the harness observed, and the structural claim (exactly one
+  configuration spends grace windows, and spends both) is asserted
+  exactly.
+
 - **Docstrings and comments in the qmd-query-singleflight series grew to
   3,444 lines describing how the work unfolded rather than what the code
   does.** Measurement results, provenance ("measured 2026-10-10,

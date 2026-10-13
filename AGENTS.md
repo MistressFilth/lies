@@ -397,7 +397,15 @@ call.**
   case dominates the middle. **The grace windows are reachable in
   exactly one row** — a hanging `qmd status` reports
   `running=False`, so the reap returns at its first line and spends
-  neither. A **hanging `qmd status` makes the
+  neither. That row's *measured* cost is a property of the runner, not
+  of the code: the harness's window is 20 ms wide and polls every 0.5 ms,
+  so a host that cannot return from a 0.5 ms sleep in under 20 ms
+  measures each window as one sleep long (4.8 ms on an oversubscribed
+  host; 27.7 s at real scale on the CI runner against ~4 s here). The
+  harness bounds it from above with the timer it observed rather than
+  with a fixed ceiling, and pins the structural claim — one row spends
+  both windows — exactly.
+  A **hanging `qmd status` makes the
   ceiling lower, not higher**: `qmd_daemon_state()` then reports
   `running=False`, so `_reap_qmd_daemon` returns without killing
   anything and spends neither grace window — which is why the "~80 s"
@@ -512,6 +520,24 @@ call.**
   reap would SIGTERM the wrong process. `qmd.js:4008-4013` also refuses
   to start while a live pidfile exists, so the hazard runs both ways: a
   stray blocks the operator's next real start.
+
+  **The HTTP daemon binds a NAME, not an address — `localhost`, and
+  `--port` does not change it.** `dist/mcp/server.js` reads
+  `options.host ?? process.env.QMD_HOST ?? "localhost"` and calls
+  `httpServer.listen(port, host)`, so the daemon lands on whichever
+  family the host resolves `localhost` to *first*. On a runner whose
+  `/etc/hosts` lists `::1 localhost` ahead of `127.0.0.1`, that is
+  `[::1]`, and `connect(("127.0.0.1", port))` is refused while
+  `connect(("localhost", port))` succeeds — measured on the CI runner,
+  where qmd logged `listening on http://localhost:57703/mcp` on the
+  requested port while the IPv4 dial got `ECONNREFUSED`, and reproduced
+  locally by bind-mounting an IPv6-first hosts file. **`--port` selects
+  the port only**; nothing in it selects the family. So any code or test
+  that probes a daemon it did not spawn must probe the *name* qmd bound,
+  and the diagnostic that settles this class of failure is qmd's own
+  `mcp.log`: it states the URL it actually reached, so a "nothing is
+  listening" report that never reads it has not distinguished *did not
+  start* from *started somewhere else*.
 
   **That hazard is a caller precondition, not a spawn-argument guard.**
   `_spawn_qmd_daemon(port=...)` without `data_dir=` is *allowed*, and

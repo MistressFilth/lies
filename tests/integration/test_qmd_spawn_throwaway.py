@@ -17,10 +17,20 @@ from lies.qmd.daemon import _QMD_BIN
 
 pytestmark = pytest.mark.slow
 
+#: qmd binds ``localhost`` (``dist/mcp/server.js``: ``options.host ??
+#: process.env.QMD_HOST ?? "localhost"``), so it follows the host's
+#: resolution order for the name. On a runner whose ``/etc/hosts`` lists
+#: ``::1 localhost`` first that is ``[::1]``, and dialling the IPv4
+#: literal is refused — measured on the CI runner, where qmd logged
+#: ``listening on http://localhost:57703/mcp`` on the requested port
+#: while ``connect(127.0.0.1, 57703)`` got ECONNREFUSED. Probing the
+#: name reaches whichever family qmd chose.
+_HOST = "localhost"
+
 
 def _free_port() -> int:
     with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
+        s.bind((_HOST, 0))
         return s.getsockname()[1]
 
 
@@ -28,7 +38,7 @@ def _wait_listening(port: int, timeout: float = 45.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            with socket.create_connection((_HOST, port), timeout=0.5):
                 return True
         except OSError:
             time.sleep(0.25)
@@ -104,7 +114,7 @@ def test_a_throwaway_daemon_serves_on_its_own_port_and_index(tmp_path: Path) -> 
         async def list_tool_names() -> list[str]:
             import fastmcp
 
-            async with fastmcp.Client(f"http://127.0.0.1:{port}/mcp") as client:
+            async with fastmcp.Client(f"http://{_HOST}:{port}/mcp") as client:
                 return sorted(t.name for t in await client.list_tools())
 
         # The daemon serves a real MCP session, which is what the
@@ -166,7 +176,7 @@ def test_a_recycle_against_a_non_default_port_restarts_on_that_port(
         state = asyncio.run(
             qmd_daemon.recycle_qmd_daemon(
                 scope=tmp_path / "scope",
-                daemon_url=f"http://127.0.0.1:{port}/mcp",
+                daemon_url=f"http://{_HOST}:{port}/mcp",
                 ready_timeout=60.0,
             )
         )
@@ -187,7 +197,7 @@ def test_a_recycle_against_a_non_default_port_restarts_on_that_port(
         shutil.rmtree(data_dir, ignore_errors=True)
 
 
-def _port_listening(port: int, host: str = "127.0.0.1") -> bool:
+def _port_listening(port: int, host: str = _HOST) -> bool:
     try:
         with socket.create_connection((host, port), timeout=0.3):
             return True
@@ -195,7 +205,7 @@ def _port_listening(port: int, host: str = "127.0.0.1") -> bool:
         return False
 
 
-def _port_owned_by(pid: int, port: int, host: str = "127.0.0.1") -> bool:
+def _port_owned_by(pid: int, port: int, host: str = _HOST) -> bool:
     """Is ``pid`` the process listening on ``port``?"""
     wanted = f"socket:[{_socket_inode(host, port)}]"
     try:
@@ -241,7 +251,7 @@ def test_daemon_tool_stale_path_respawns_on_the_configured_port(
     port = _free_port()
     data_dir = tmp_path / "cache"
     monkeypatch.setenv("XDG_CACHE_HOME", str(data_dir))
-    monkeypatch.setenv("LIES_QMD_URL", f"http://127.0.0.1:{port}/mcp")
+    monkeypatch.setenv("LIES_QMD_URL", f"http://{_HOST}:{port}/mcp")
 
     # Isolate the stale respawn from the recovery that would repair it.
     async def _no_recovery(url: str, name: str, make_call: object) -> dict[str, list]:
@@ -260,8 +270,15 @@ def test_daemon_tool_stale_path_respawns_on_the_configured_port(
         # Make staleness REAL: the daemon started before this write.
         # ``_is_daemon_stale`` compares the marker against the pidfile,
         # and both live under XDG_CACHE_HOME, so the throwaway owns them.
+        #
+        # The marker's mtime is set explicitly rather than left to the
+        # write order. Two files written microseconds apart can share an
+        # mtime tick, and ``st_mtime > daemon_start`` is then false — a
+        # flake that reads as a defect in the reap it never reached.
         marker = data_dir / "qmd" / "last-write-marker"
         marker.write_text("x")
+        started_at = pidfile.stat().st_mtime
+        os.utime(marker, (started_at + 1.0, started_at + 1.0))
         assert qmd_daemon._is_daemon_stale(), (
             "could not make the throwaway genuinely stale; this test would "
             "otherwise pass without exercising the respawn at all"

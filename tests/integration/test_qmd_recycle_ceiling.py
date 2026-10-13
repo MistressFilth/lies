@@ -37,15 +37,36 @@ CEILING_BAND_S = (52.0, 75.0)
 #: The spawn's own ``STATUS_TIMEOUT_S``, the single biggest contributor.
 SPAWN_BOUND_S = d.STATUS_TIMEOUT_S
 
-#: Two 2 s grace windows, plus scheduling.
-GRACE_COST_S = (2.0, 6.0)
+#: ``_reap_qmd_daemon``'s two grace windows, and its poll inside them.
+GRACE_WINDOW_S = 2.0
+GRACE_POLL_S = 0.05
 
 _STATUS_RUNNING = b"MCP:   running (PID 1234)\n"
 _STATUS_DOWN = b"no MCP line here\n"
 
-#: (windows spent, sleep calls, seconds spent, longest single sleep) for the
-#: reap stand-in, per measurement. Diagnostics only — see ``_sleep_quantum``.
-_REAP_SPENT: list[tuple[int, int, float, float]] = []
+
+class _ReapSpend:
+    """What the reap stand-in did: windows entered, seconds spent, longest sleep."""
+
+    __slots__ = ("windows", "seconds", "longest_sleep")
+
+    def __init__(self, windows: int, seconds: float, longest_sleep: float) -> None:
+        self.windows = windows
+        self.seconds = seconds
+        self.longest_sleep = longest_sleep
+
+    def __repr__(self) -> str:
+        return (
+            f"_ReapSpend(windows={self.windows}, "
+            f"seconds={self.seconds:.4f}, longest_sleep={self.longest_sleep:.4f})"
+        )
+
+
+#: Keyed by the label of the measurement that ran the reap, so the extra
+#: unnamed measurement in the poll-granularity test cannot shift the
+#: pairing the grace test relies on.
+_REAP_SPENT: dict[str, "_ReapSpend"] = {}
+_CURRENT_LABEL = "?"
 
 #: Every pipe this harness opens, so the silent-child scenarios cannot
 #: leak four descriptors per simulated subprocess call.
@@ -162,47 +183,50 @@ class _NeverServes:
         return []
 
 
-def _scaled_reap(*, grace: float = 2.0, poll: float = 0.05) -> None:
+def _scaled_reap(*, grace: float = GRACE_WINDOW_S, poll: float = GRACE_POLL_S) -> None:
     """``_reap_qmd_daemon`` with its two grace windows scaled like everything else."""
     state = d.qmd_daemon_state()
     if not state.running or state.pid is None:
-        _REAP_SPENT.append((0, 0, 0.0, 0.0))
+        _REAP_SPENT[_CURRENT_LABEL] = _ReapSpend(0, 0.0, 0.0)
         return
     started = time.monotonic()
-    windows = sleeps = 0
+    windows = 0
     longest = 0.0
     for _ in range(2):
         windows += 1
         deadline = time.monotonic() + grace / N
         while time.monotonic() < deadline:
             if not d._pid_alive(state.pid):
-                _REAP_SPENT.append((windows, sleeps, time.monotonic() - started, longest))
+                _REAP_SPENT[_CURRENT_LABEL] = _ReapSpend(
+                    windows, time.monotonic() - started, longest
+                )
                 return
-            sleeps += 1
             slept_from = time.monotonic()
             time.sleep(poll / N)
             longest = max(longest, time.monotonic() - slept_from)
-    _REAP_SPENT.append((windows, sleeps, time.monotonic() - started, longest))
+    _REAP_SPENT[_CURRENT_LABEL] = _ReapSpend(windows, time.monotonic() - started, longest)
 
 
-def _sleep_quantum(requested: float = 0.0005, repeats: int = 20) -> float:
-    """The runner's worst overshoot on ``time.sleep(requested)``, in seconds.
+def _max_possible_spend(spend: "_ReapSpend") -> float:
+    """The most the two windows could cost on a host with ``spend``'s timer.
 
-    A scaled grace window is ``2.0 / N`` = 20 ms wide and sleeps every
-    ``0.05 / N`` = 0.5 ms inside it, so on a host whose scheduler cannot
-    return from a sub-millisecond sleep in under 20 ms the window
-    measures as *one sleep long* rather than as 20 ms.
+    A window's loop exits on the first check past its deadline, so it
+    costs its own width plus at most one final sleep. Returns real
+    seconds.
     """
-    worst = 0.0
-    for _ in range(repeats):
-        t0 = time.monotonic()
-        time.sleep(requested)
-        worst = max(worst, time.monotonic() - t0)
-    return worst
+    return 2 * GRACE_WINDOW_S + 2 * spend.longest_sleep * N
 
 
-async def _measure(status_mode: str, spawn_hangs: bool, *, scale_poll: bool = True) -> float:
+async def _measure(
+    status_mode: str,
+    spawn_hangs: bool,
+    *,
+    scale_poll: bool = True,
+    label: str = "(unlabelled)",
+) -> float:
     """One exhaustion, through the genuine spawn, reap, probe loop and deadline."""
+    global _CURRENT_LABEL
+    _CURRENT_LABEL = label
     _open_pipes.clear()
     poll_patch = (
         patch.object(_subprocess, "_POLL_INTERVAL_S", _subprocess._POLL_INTERVAL_S / N)
@@ -260,10 +284,13 @@ SCENARIOS = (
 @pytest.fixture(scope="module")
 def readings() -> dict[str, float]:
     """All five scenarios, once. A real exhaustion is slow even scaled."""
+    # Cleared here rather than per-measure: the poll-granularity test
+    # runs a sixth, unnamed measurement, and the grace test pairs these
+    # with SCENARIOS by position.
+    _REAP_SPENT.clear()
 
     async def _all() -> dict[str, float]:
-        _REAP_SPENT.clear()
-        return {label: await _measure(mode, hangs) for label, mode, hangs in SCENARIOS}
+        return {label: await _measure(mode, hangs, label=label) for label, mode, hangs in SCENARIOS}
 
     out = asyncio.run(_all())
     for f in _open_pipes:
@@ -315,16 +342,53 @@ def test_only_a_running_status_spends_the_grace_windows(
     down = readings["daemon down"]
     up = readings["daemon up, ignores SIGTERM"]
     delta = up - down
-    quantum = _sleep_quantum()
-    spent = dict(zip((label for label, _, _ in SCENARIOS), _REAP_SPENT, strict=False))
-    print(f"sleep quantum (worst of 20 x 0.5ms): {quantum * 1000:.1f} ms")
-    print(f"reap (windows, sleeps, seconds, longest sleep) by scenario: {spent}")
+    # The poll-granularity test runs a sixth, unnamed measurement; only
+    # the five scenario rows pair with the readings.
+    spent = {label: _REAP_SPENT[label] for label, _, _ in SCENARIOS}
+    print(f"reap spend by scenario: {spent}")
     print(f"readings: {readings}")
-    assert GRACE_COST_S[0] <= delta <= GRACE_COST_S[1], (
-        f"the reap's two grace windows cost {delta:.1f}s; two 2s windows "
-        f"plus scheduling is the expected magnitude. "
-        f"idle-process sleep quantum {quantum * 1000:.1f} ms; "
-        f"reap spend {spent}"
+
+    # The structural claim: exactly one row enters a grace window, and it
+    # enters both of them. This is the part that is a property of the code.
+    assert {label: s.windows for label, s in spent.items()} == {
+        label: (2 if label == "daemon up, ignores SIGTERM" else 0) for label, _, _ in SCENARIOS
+    }, (
+        f"grace windows must be reachable in exactly one configuration, and both of them must be spent there; got {spent}"
+    )
+
+    # The magnitude, measured on the reap itself rather than as the
+    # difference of two whole-harness readings — the difference carries
+    # the noise of both exhaustions, and the reap is what is under test.
+    # Bounded BELOW by the two windows (the reap polls until its deadline
+    # and cannot leave one early) and ABOVE by what this host's timer can
+    # deliver.
+    #
+    # The ceiling is derived, not fixed. A window here is 20 ms wide and
+    # polls every 0.5 ms, so on a runner whose scheduler cannot return
+    # from a 0.5 ms sleep in under 20 ms — measured at 4.8 ms on an
+    # oversubscribed host, and enough on the CI runner to push the
+    # reading to 27.7 s — each window measures as ONE sleep long rather
+    # than as 20 ms. A fixed ceiling is a claim about the runner's timer,
+    # not about the reap.
+    grace_row = spent["daemon up, ignores SIGTERM"]
+    cost_s = grace_row.seconds * N
+    ceiling_s = _max_possible_spend(grace_row)
+    floor_s = 2 * GRACE_WINDOW_S
+    assert floor_s <= cost_s <= ceiling_s, (
+        f"the reap's two grace windows cost {cost_s:.1f}s; two "
+        f"{GRACE_WINDOW_S:g}s windows must cost at least {floor_s:g}s, and "
+        f"cannot exceed {ceiling_s:.1f}s on a host whose longest "
+        f"{GRACE_POLL_S / N * 1000:g}ms sleep took "
+        f"{grace_row.longest_sleep * 1000:.1f}ms. {spent}"
+    )
+
+    # And the same claim from outside: the grace row costs materially
+    # more than the row that reaps a daemon it never saw running. A reap
+    # that stopped spending its windows collapses this to zero, and the
+    # window count above would not notice.
+    assert delta >= 0.5 * cost_s, (
+        f"the grace row costs only {delta:.1f}s more than the down row, but "
+        f"its reap alone spent {cost_s:.1f}s; {spent}"
     )
     # And the converse: a hanging status reports not-running, so the reap
     # spends no grace window. A figure that added the windows here would
