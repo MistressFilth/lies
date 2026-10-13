@@ -4,6 +4,7 @@ import os
 import signal
 import socket
 import subprocess
+import time
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -322,11 +323,11 @@ def test_stop_terminates_a_cooperative_child(tmp_path: Path) -> None:
     )
     daemon.write_record(wiki, _record(pid=proc.pid))
     try:
-        # force=True: this pins the stop mechanism (SIGTERM then a clear
+        # this pins the stop mechanism (SIGTERM then a clear
         # record), not the shared-daemon gate, which needs a real
         # listener and has its own tests below. Without it the outcome
         # depends on whether anything happens to hold :8737 on the host.
-        result = daemon.stop_daemon(wiki, grace=5.0, force=True)
+        result = daemon.stop_daemon(wiki, grace=5.0)
         assert result.action == "stopped"
         assert result.signal == "SIGTERM"
         assert daemon.read_record(wiki) is None
@@ -360,36 +361,54 @@ def _start_listener(port: int) -> subprocess.Popen[bytes]:
     )
 
 
-def test_stop_refuses_while_the_daemon_is_serving(tmp_path: Path) -> None:
-    """A serving daemon is not stopped without ``force``."""
-    wiki = _wiki(tmp_path)
-    with _serving_socket() as port:
-        daemon.write_record(wiki, _record(pid=999_999_999, port=port))
-        with pytest.MonkeyPatch.context() as mp:
-            # No real daemon owns this record, so pin staleness False:
-            # the predicate under test is the serving check, not identity.
-            mp.setattr(daemon, "is_stale", lambda _r: False)
-            with pytest.raises(daemon.DaemonInUse) as exc:
-                daemon.stop_daemon(wiki, grace=0.05)
-        message = str(exc.value)
-        assert "--force" in message
-        assert "shared" in message
-        # A refusal is not a stop: the record survives.
-        assert daemon.read_record(wiki) is not None
+def _wait_for_listener(port: int, timeout: float = 10.0) -> None:
+    """Block until ``port`` accepts a connection.
+
+    ``_start_listener`` returns as soon as the child is spawned, so a
+    caller that immediately probes the port races the child's ``bind``.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+                return
+        except OSError:
+            time.sleep(0.002)
+    raise AssertionError(f"nothing ever listened on {port}")
 
 
-def test_stop_with_force_stops_a_serving_daemon(tmp_path: Path) -> None:
-    """``force=True`` is the escape hatch, and it actually stops it."""
+def test_stop_stops_a_serving_daemon_and_reports_the_disconnect(tmp_path: Path) -> None:
+    """A serving daemon is stopped without ``force``, and the drop is reported."""
     wiki = _wiki(tmp_path)
     with _listening_port() as port:
         proc = _start_listener(port)
         try:
+            _wait_for_listener(port)
             daemon.write_record(wiki, _record(pid=proc.pid, port=port))
             with pytest.MonkeyPatch.context() as mp:
                 mp.setattr(daemon, "is_stale", lambda _r: False)
-                result = daemon.stop_daemon(wiki, grace=5.0, force=True)
+                result = daemon.stop_daemon(wiki, grace=5.0)
             assert result.action == "stopped"
+            assert result.disconnected is True
             assert daemon.read_record(wiki) is None
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_stop_reports_no_disconnect_when_nothing_was_serving(tmp_path: Path) -> None:
+    """A daemon that was not accepting connections reports no disconnect."""
+    wiki = _wiki(tmp_path)
+    with _listening_port() as port:
+        # Nothing is bound to `port`, so the predicate reads False.
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)", "lies.cli", "_serve"]
+        )
+        try:
+            daemon.write_record(wiki, _record(pid=proc.pid, port=port))
+            result = daemon.stop_daemon(wiki, grace=5.0)
+            assert result.action == "stopped"
+            assert result.disconnected is False
         finally:
             proc.kill()
             proc.wait(timeout=5)
@@ -465,7 +484,7 @@ def test_stop_escalates_to_sigkill(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(daemon, "read_record", lambda _w: _record(pid=pid))
     monkeypatch.setattr(daemon, "clear_record", lambda _w: None)
 
-    result = daemon.stop_daemon(wiki, grace=0.05, force=True)
+    result = daemon.stop_daemon(wiki, grace=0.05)
 
     assert result.action == "stopped"
     assert result.signal == "SIGKILL"

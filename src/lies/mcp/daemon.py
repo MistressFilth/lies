@@ -81,15 +81,6 @@ class DaemonStopFailed(DaemonError):
     """The daemon process survived SIGKILL."""
 
 
-class DaemonInUse(DaemonError):
-    """A live, serving daemon was stopped without ``force``.
-
-    The daemon is shared across every MCP client on the host, so
-    refusing by default keeps one session's ``down`` from silently
-    disconnecting all the others.
-    """
-
-
 @dataclass
 class PidRecord:
     """On-disk description of a running daemon.
@@ -267,9 +258,8 @@ def _daemon_is_serving(rec: PidRecord, timeout: float = 1.0) -> bool:
     completes the handshake into the backlog whether or not the
     process answers MCP, so a daemon wedged after ``listen()`` probes
     True. A dead daemon, or one not bound to this address, probes
-    False. ``_down`` therefore refuses with :class:`DaemonInUse`
-    against a wedged daemon — that is the operator's call, and the
-    message names ``--force``.
+    False. A True here means clients had a stream to lose, which is what
+    :attr:`StopResult.disconnected` reports to the caller.
 
     A TCP reachability probe, not a session count: the registry lives
     inside the daemon process, and a session count would be flaky
@@ -440,11 +430,16 @@ class StopResult:
     ``action`` is ``"stopped"`` when a live process was signalled,
     ``"cleared_stale"`` when only a dead record was removed, and
     ``"none"`` when there was nothing to do.
+
+    ``disconnected`` is True when the daemon was accepting connections at
+    the moment it was signalled, so every MCP client on the host lost its
+    stream. The caller names that consequence; this module stays silent.
     """
 
     action: str
     pid: int | None
     signal: str | None
+    disconnected: bool = False
 
 
 @dataclass(frozen=True)
@@ -498,7 +493,7 @@ def _pid_alive(pid: int) -> bool:
     return state != "Z"
 
 
-def stop_daemon(wiki: Wiki, *, grace: float = 10.0, force: bool = False) -> StopResult:
+def stop_daemon(wiki: Wiki, *, grace: float = 10.0) -> StopResult:
     """Stop the tracked daemon, escalating SIGTERM to SIGKILL.
 
     Only pidfile-tracked daemons are touched — never the stdio servers
@@ -506,12 +501,12 @@ def stop_daemon(wiki: Wiki, *, grace: float = 10.0, force: bool = False) -> Stop
 
     The daemon is machine-global and every MCP client on the host holds
     a long-lived stream to it, so stopping it disconnects all of them at
-    once. ``force=False`` (the default) refuses while it is serving.
+    once. A daemon that was serving is still stopped; ``disconnected`` on
+    the result says whether that happened, so the caller can warn.
 
     Raises:
         DaemonBusy: Create-lock contention.
         DaemonStopFailed: The process survives SIGKILL.
-        DaemonInUse: A live daemon is serving and ``force`` is false.
     """
     lock = create_lock_path(wiki)
     lock_result = acquire_create_lock(lock, max_age_s=CREATE_LOCK_MAX_AGE_S)
@@ -530,14 +525,7 @@ def stop_daemon(wiki: Wiki, *, grace: float = 10.0, force: bool = False) -> Stop
             clear_record(wiki)
             return StopResult(action="cleared_stale", pid=rec.pid, signal=None)
 
-        if not force and _daemon_is_serving(rec):
-            raise DaemonInUse(
-                f"the LIES MCP daemon at {daemon_url(rec)} (pid {rec.pid}) is serving. "
-                "It is shared: every MCP client on this host holds a long-lived stream "
-                "to it, and stopping it disconnects all of them at once — their next "
-                "call fails with no error in the LIES or qmd logs. Stop it anyway "
-                "with `lies mcp down --force` if that is what you mean."
-            )
+        was_serving = _daemon_is_serving(rec)
 
         try:
             os.kill(rec.pid, signal_module.SIGTERM)
@@ -548,18 +536,22 @@ def stop_daemon(wiki: Wiki, *, grace: float = 10.0, force: bool = False) -> Stop
 
         if _wait_for_exit(rec.pid, grace):
             clear_record(wiki)
-            return StopResult(action="stopped", pid=rec.pid, signal="SIGTERM")
+            return StopResult(
+                action="stopped", pid=rec.pid, signal="SIGTERM", disconnected=was_serving
+            )
 
         try:
             os.kill(rec.pid, signal_module.SIGKILL)
         except ProcessLookupError:
             clear_record(wiki)
-            return StopResult(action="stopped", pid=rec.pid, signal="SIGTERM")
+            return StopResult(
+                action="stopped", pid=rec.pid, signal="SIGTERM", disconnected=was_serving
+            )
 
         if not _wait_for_exit(rec.pid, 2.0):
             raise DaemonStopFailed(f"pid {rec.pid} survived SIGKILL")
         clear_record(wiki)
-        return StopResult(action="stopped", pid=rec.pid, signal="SIGKILL")
+        return StopResult(action="stopped", pid=rec.pid, signal="SIGKILL", disconnected=was_serving)
     finally:
         release_create_lock(lock, fd)
 
