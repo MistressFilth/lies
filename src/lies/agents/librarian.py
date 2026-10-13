@@ -199,6 +199,16 @@ def with_search_diagnostics(out: LibrarianOutput, diag: SearchDiagnostics) -> Li
     replaces the model's copy verbatim; a non-transient one leaves
     ``transient`` and ``no_coverage`` alone.
 
+    Covers every librarian dispatch that passes a record:
+    ``librarian_agent_run`` (``lib_ask``) and ``ground``'s legacy F18
+    path. It does **not** cover
+    ``Orchestrator._register_librarian_tools``, which registers once
+    for the agent's lifetime, so a record there would have to be
+    shared across dispatches — the leakage this class exists to
+    prevent. That site is instead narrowed downstream by
+    ``_validate_claim_citations``, which drops invented *text* on a
+    real page but not a wholly fabricated one.
+
     Attestation is path-level, not text-level — see AGENTS.md.
     """
     if out.excerpts:
@@ -228,11 +238,14 @@ def with_search_diagnostics(out: LibrarianOutput, diag: SearchDiagnostics) -> Li
             distinct_pages=len({excerpt.slug for excerpt in kept}),
             fallback_reason=reason,
         )
-    if diag.fallback_reason:
+    if diag.fallback_reason or diag.transient:
+        # Guarded on the verdict as well as its reason: a recorded
+        # ``transient`` carrying no reason is still the recorded truth,
+        # and dropping it would trade a fact for a string.
         transient = out.transient or diag.transient
         return replace(
             out,
-            fallback_reason=diag.fallback_reason,
+            fallback_reason=diag.fallback_reason or out.fallback_reason,
             transient=transient,
             no_coverage=False if diag.transient else out.no_coverage,
             searched_scope=diag.searched_scope or out.searched_scope,

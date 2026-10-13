@@ -833,3 +833,80 @@ def test_an_exclude_only_ground_drops_the_collection_from_the_dispatch(
         "searched_scope must show the exclusion took effect, not the requested scope"
     )
     assert digest.exclude_expr is exclude, "the digest still reports the expression it was given"
+
+
+# --- the legacy F18 librarian path is attested too ---------------------
+#
+# `ground()` reaches this branch when a tag/exclude resolves to zero
+# collections, so neither fast path fires. It is an LLM dispatch like
+# any other and nothing downstream checks it, so a fabricated excerpt
+# used to ride straight into `ArchivistDigest.citations`.
+
+
+class _RecordingAgent:
+    """Fake librarian agent that records what the wiring handed it."""
+
+    def __init__(self, output: Any) -> None:
+        self._output = output
+        self.diagnostics: Any = None
+
+    def tool(self, **kwargs: Any) -> Any:
+        return lambda fn: fn
+
+    def run_sync(self, question: str, *, deps: Any) -> Any:
+        return SimpleNamespace(output=self._output)
+
+
+def _wiring_ok(monkeypatch: pytest.MonkeyPatch, agent: _RecordingAgent) -> None:
+    """Let the legacy path complete its tool wiring against a fake wiki."""
+    monkeypatch.setattr("lies.mcp.resolution.resolve_wiki", lambda name: SimpleNamespace(name="w"))
+    monkeypatch.setattr("lies.memory.service.WikiMemoryService", lambda wiki: SimpleNamespace())
+
+
+def _bundle_with(*slugs: str) -> Any:
+    from lies.agents.librarian import LibrarianOutput, PageExcerpt
+    from lies.markdown_spans import Span
+
+    excerpts = [
+        PageExcerpt(
+            collection=s.split("/", 1)[0],
+            slug=s,
+            title=s,
+            spans=[Span(heading_path=["H"], body="body", code_fence=False, start_line=1)],
+        )
+        for s in slugs
+    ]
+    return LibrarianOutput(
+        tag_expr="ghost",
+        exclude_expr=None,
+        excerpts=excerpts,
+        distinct_pages=len(excerpts),
+        no_coverage=False,
+    )
+
+
+def test_ground_legacy_path_drops_a_fabricated_excerpt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The F18 fallback attests its bundle like every other librarian dispatch."""
+    from lies.mcp import grounding
+
+    _registry_serving(monkeypatch, "switchyard")
+    monkeypatch.setattr(
+        "lies.mcp.server._collect_available_tags_mcp",
+        lambda wiki=None: {"ghost", "c:switchyard"},
+    )
+    agent = _RecordingAgent(_bundle_with("ghost/never-returned.md"))
+    monkeypatch.setattr(grounding, "librarian_agent", lambda model=None: agent)
+    _wiring_ok(monkeypatch, agent)
+
+    digest = asyncio.run(grounding.ground("anything", tag_expr="ghost", top_k=5))
+
+    assert digest.citations == [], (
+        f"no tool ever returned that page; citations were {digest.citations!r}"
+    )
+    assert digest.transient is True, (
+        "a wholly invented bundle is a fact about the run, never a clean miss"
+    )
+    assert digest.no_coverage is False
+    assert "ghost/never-returned.md" in (digest.fallback_reason or ""), digest.fallback_reason

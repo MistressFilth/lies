@@ -18,125 +18,37 @@ at 0.48.6 while those fields were still being added; 0.48.6 was never
 released, so nothing has shipped under it, but bookkeeping follows the
 rule rather than the accident.
 
-### Fixed
+### Added
 
-- **Four tests failed on CI only, because `make test` runs neither
-  `--runslow` nor `INTEGRATION=1` — the two gates CI actually uses.**
-  `test_lies_flock_qmd_recycle_invokes_recycle_helper` was a real defect
-  this branch introduced: `recycle_qmd_daemon`'s keyword-only `data_dir=`
-  was renamed to `scope=`, and the test's fake still declared the old
-  name, so the CLI's call raised `TypeError`. The other three were the
-  throwaway-spawn tests, whose "nothing is listening" was qmd's *name*
-  bind (see below) and not a daemon that failed to start.
+- **`tests/unit/test_docstring_budget.py` makes the prose budgets a gate
+  rather than a habit.** The standing budget is a test module or test
+  function docstring at **one line** and a `src/` body comment block at
+  **4 consecutive lines** (AAA). The tree does not meet it: measured
+  before this pass, 192 `src/` comment blocks and 865 test docstrings
+  were over, the worst being a 31-line block in
+  `memory/service.py` and a 48-line module docstring. A gate that
+  failed on that today would have blocked every commit including the
+  one that fixes it, and one set to the tree's maxima would have passed
+  the 14-line narrative block the review flagged — a guard that cannot
+  fail is not a guard.
 
-- **Production LIES could not reach its own qmd daemon on any
-  IPv6-first host.** qmd binds the literal name `localhost`
-  (`dist/mcp/server.js:671`: `listen(port, "localhost")`; there is no
-  `options.host` chain and `QMD_HOST` appears nowhere in `dist/`), and
-  Node takes the *first* family the host resolves it to — `[::1]` where
-  `/etc/hosts` lists `::1 localhost` first. LIES named a literal address
-  at every site that addresses the daemon, so `DEFAULT_QMD_URL`,
-  `lifecycle._HOST` and the `AF_INET` socket behind the port probe all
-  resolved to `127.0.0.1` and were refused. All three now name the
-  host. The probe also moved to `socket.create_connection`, because a
-  socket pinned to `AF_INET` filters name resolution to v4 and
-  reproduces the very refusal the name fixes. Measured against a
-  `[::1]`-only listener with `localhost` resolving v6-first: the old
-  probe returns `False`, the new one `True`. The throwaway-spawn tests
-  already probed the name; this is the same defect on the path the
-  agent actually uses.
+  So the gate is a **ratchet**: `tests/unit/docstring_budget_baseline.json`
+  records the shortfall as a per-file count, and the test asserts the
+  recomputed counts equal it *exactly*. A file that appears in the
+  scan, or whose count grows, fails; a file that shrinks or clears
+  also fails until the baseline is regenerated with
+  `python tests/unit/test_docstring_budget.py --write`. Debt can only
+  shrink, and a fix has to be recorded rather than silently absorbed.
+  The gate file obeys its own budget, and four synthetic tests assert
+  the detectors have teeth in both directions.
 
-- **qmd's HTTP daemon binds `localhost`, so probing it by IPv4 literal
-  is wrong on any host that resolves `localhost` IPv6-first.** On the
-  CI runner that resolved to `[::1]`, so qmd logged
-  `listening on http://localhost:57703/mcp` on the port the test
-  requested while `connect(("127.0.0.1", 57703))` was refused —
-  reproducing a "daemon did not start" report for a daemon that was up
-  and serving. `--port` selects the port and nothing else. The
-  throwaway-spawn tests now probe the name qmd binds.
-  The failure message also carries qmd's version, the throwaway cache
-  root, the pidfile, the recorded pid's `/proc` cmdline and qmd's own
-  `mcp.log`, because that log states the URL the daemon actually
-  reached (`server.js:696`) — which is the one fact that separates *did
-  not start* from *started somewhere else*, and the previous message
-  distinguished neither.
-
-- **The recycle-ceiling harness's grace-window bound asserted the
-  runner's timer, not the reap's behaviour.** `GRACE_COST_S` capped the
-  grace row at 6 s, but the harness's window is 20 ms wide and polls
-  every 0.5 ms, so a host that cannot return from a 0.5 ms sleep in
-  under 20 ms measures each window as one sleep long — 27.7 s at real
-  scale on the CI runner, against ~4 s on an idle host. The reap itself
-  is correct and unchanged; the ceiling is now derived from the timer
-  the harness observed, and the structural claim (exactly one
-  configuration spends grace windows, and spends both) is asserted
-  exactly.
-
-- **Docstrings and comments in the qmd-query-singleflight series grew to
-  3,444 lines describing how the work unfolded rather than what the code
-  does.** Measurement results, provenance ("measured 2026-10-10,
-  transcribed not re-measured at commit time"), retractions of theories
-  the code never asserted, review history and vendored `file:line`
-  citations had accumulated in source docstrings. This series moves
-  them to `AGENTS.md` and to this file, where they belong, and leaves
-  behind docstrings that state what a function does, its arguments, its
-  return and its raises. Test docstrings are down to one line each.
-
-  Three,444 → 396 added docstring lines; 879 → 584 added comment lines.
-  **No behaviour change**: stripping every docstring and `#` comment from
-  every `.py` file at both revisions leaves the tree identical except for
-  two assertion *messages* and four AGENTS.md citation line numbers whose
-  subjects moved.
-
-  Two pins needed retargeting rather than re-satisfying.
-  `test_agents_line_refs` tracks AGENTS.md's `file:line` spellings by
-  what the cited line contains, so cutting the docstrings above six spawn
-  sites moved those lines; the numbers were re-derived and AGENTS.md
-  updated alongside them, which is the loop that pin exists to run.
-  `test_a_span_body_is_still_not_checked` keeps asserting that invented
-  text attributed to a really-read page survives — only its failure
-  message's pointer moved from `with_search_diagnostics`'s docstring to
-  the `AGENTS.md` trade paragraph that now owns it.
-
-  Two facts were not already written down anywhere and were moved into
-  `AGENTS.md` rather than deleted: `qmd_lock_async`'s latent reentrancy
-  hazard (`_held_depth` is a `ContextVar`, so a future path acquiring the
-  lock and then dispatching a `query` through a worker thread would run it
-  with no inode held, silently), and the fact that awaiting in that gate
-  buys anyio thread tokens rather than event-loop protection. The network
-  audit's two coverage gaps joined this file, above.
-
-- **`lies mcp down` in `test_full_lifecycle` passed no `--force`.** The
-  test starts its own daemon on a spare port, handshakes it and tears it
-  down, so it means it — and the `DaemonInUse` refusal that a serving
-  daemon earns (stopping the machine-global LIES daemon disconnects every
-  MCP client on the host at once) returns exit 1. The guard is correct
-  and unchanged; the invocation was not. The same omission in
-  `test_down_leaves_the_qmd_daemon_running` is fixed the same way.
-  Neither had CLI-level coverage: `DaemonInUse` was only ever asserted
-  as raised from `stop_daemon`, never mapped to an exit code, which is
-  the gap that let the red invocation sit in the suite. Two tests in
-  `tests/unit/test_cli.py` now pin the mapping and the `--force`
-  pass-through.
-
-- **The vendored `fastmcp` / `anyio` line citations are pinned.** Six
-  references in `AGENTS.md` and `CHANGELOG.md` — `client.py:228`, `:248`,
-  `:587`, `:1045-1048`, `:1080-1084` and
-  `anyio/_core/_synchronization.py:164-168` — pointed into installed
-  distributions and were deliberately left unpinned, on the grounds that
-  they are version-specific and that the doc said so at the reference
-  site. That is a deferral with no due date: a fastmcp bump falsified
-  all six silently. They are now pinned by the same contract as the
-  in-repo references, resolved from the installed distribution, so a bump
-  that moves the code turns the pin red instead. `AGENTS.md` also gained
-  the two citations it described in prose but never numbered.
-  `qmd.js:4008-4013` is still unpinned and says so in the test module's
-  docstring: it lives in a node package's bundled `dist/` and may be
-  absent on a host that has not run qmd.
+  The budgets are *stated* rather than silently relaxed: the standing
+  value is a module constant, and the baseline records the debt beside
+  it. Markdown prose (`README.md`, this file) is out of scope — the
+  budget the user set is for code and tests.
 
 ### Changed
 
-- **A librarian bundle's excerpts are validated against the paths the
   tools actually returned.** `SearchDiagnostics` now records
   `attested_paths` — every `hit`/`hits[*].path` from a `search`
   envelope, plus every key of a `read` result — and
@@ -176,6 +88,29 @@ rule rather than the accident.
   `with_search_diagnostics` and pinned by
   `test_a_span_body_is_still_not_checked` rather than shipped. No tool
   or prompt signature changed; the MCP surface is identical.
+
+  **Which dispatches carry a record — two of three.** `librarian_agent_run`
+  (`lib_ask`) threads one, and so does `ground`'s legacy F18 path, which
+  `ground()` reaches when a tag or exclude resolves to zero collections
+  and there is no fast-path fan-out to take. That path was the gap: it is
+  an LLM dispatch like any other, nothing downstream checks it, and a
+  fabricated excerpt rode straight into `ArchivistDigest` citations. It
+  now threads a record and forwards the bundle's `transient` /
+  `fallback_reason` onto the digest, so a drop there reads as a failed
+  run rather than a clean miss.
+
+  `Orchestrator._register_librarian_tools` carries **no** record and is
+  not closed by this change. It registers its tools once for the
+  agent's lifetime, and pydantic-ai raises on a double-register, so a
+  per-dispatch record would have to be either a rebuilt agent per query
+  or one record shared across dispatches — and the shared shape is
+  precisely the cross-dispatch leakage `SearchDiagnostics` is an
+  argument-instead-of-a-global to prevent. What narrows that site
+  instead is `_validate_claim_citations`, and it is narrower than it
+  looks: a claim's quote is checked against the bundle's **own** excerpt
+  bodies, so invented text on a real page is dropped, while a wholly
+  fabricated page — excerpt and text both invented — passes. That is a
+  standing limit, named here rather than implied.
 
 - **A qmd flock release unlinks the triad it acquired.** Both poll loops
   now return the winning `_Attempt`, which carries the paths it ran
@@ -362,6 +297,216 @@ rule rather than the accident.
   a gate people learn to work around.
 
 ### Fixed
+
+- **A partly-dropped librarian bundle lost its drop reason on the one
+  arm that can happen.** `_ask_impl` read `lib_out.fallback_reason` on
+  both failure arms but took `fallback_reason` from the synthesizer
+  alone on the success path. A *partial* attestation drop keeps
+  `transient=False`, so the synthesizer runs and the reason naming the
+  fabricated pages was set on the bundle and then thrown away — the
+  reader got citations from attested excerpts and no word that the
+  librarian invented others. Exactly the failure this branch exists to
+  remove, on the one arm the change opened up. The envelope now joins
+  both reasons through `_join_reasons`, which de-duplicates, and the
+  join is pinned end to end: two envelope-level tests assert the drop
+  survives alone and alongside a synthesizer fallback, plus one that a
+  clean run still reports no reason at all.
+
+- **`ground`'s legacy F18 librarian path now attests its bundle.** See
+  "Which dispatches carry a record" above. `ground()` reaches this
+  branch when a tag or exclude resolves to zero collections, so neither
+  fast path fires. Nothing downstream checked it, so a fabricated
+  excerpt rode into `ArchivistDigest.citations`; it now threads a
+  `SearchDiagnostics`, runs the bundle through
+  `with_search_diagnostics`, and forwards `transient` /
+  `fallback_reason` onto the digest so a total drop reads as a failed
+  run rather than a clean miss.
+
+- **`with_search_diagnostics` no longer discards a verdict that carries
+  no reason.** The empty-bundle arm guarded on `if
+  diag.fallback_reason:`, so a recorded `transient=True` with no
+  reason fell through untouched. Every current `_search_impl` transient
+  arm sets a reason, so this was unreachable — it is one search arm
+  away from discarding the recorded truth. The guard is now
+  `diag.fallback_reason or diag.transient`, and the reason falls back to
+  the model's own copy rather than to `None`.
+
+- **`_daemon_is_serving`'s docstring stated the opposite of what the
+  probe measures.** It claimed "a dead **or wedged** daemon fails this
+  probe and stops cleanly". A daemon wedged after `listen()` still
+  completes the TCP handshake — the kernel accepts into the backlog
+  whether or not the process answers MCP — so the probe returns `True`
+  and `lies mcp down` refuses with `DaemonInUse` against precisely the
+  daemon an operator most wants to kill. `DaemonInUse` already names
+  `--force`, so this was discoverable rather than a trap, but the
+  docstring told the next maintainer the opposite. It now states that
+  the probe measures TCP accept, that that is not serving, and what the
+  refusal means.
+
+- **`test_agents_line_refs`'s spawn-site pin went content-only.** Three
+  `SINGLE_SITES` rows asserted an exact line number into files this
+  same branch edits: adding a comment above any of them turned the pin
+  red with no behavioural change, and it could not see a new spawn site
+  added *below* the cited one. `AGENTS.md` now cites the files rather
+  than lines, and two pins replace the three — one asserting each cited
+  file still calls `_spawn_qmd_daemon(port=`, and one asserting the
+  cited set is *exhaustive* against the files that actually spawn, so
+  a fifth site inherits the pin. `ensure_qmd_daemon`'s "three paths"
+  is now an AST count rather than a line triple. The grounding pair
+  keeps its line numbers and its exhaustiveness twin: that one has
+  caught real drift (it turned red on this pass's `grounding.py` edit).
+
+- **`Makefile`'s `--ignore` churn is gone and `PYTHONPATH` extends.**
+  The flag had been moved from `tests/mcp/test_tools.py` to
+  `tests/unit/mcp/test_tools.py`; neither file exists, so it was a
+  no-op on both sides and read like a fix. It is deleted. `PYTHONPATH`
+  was also replacing rather than extending an inherited value, putting
+  the repo's `tools/` ahead of whatever the caller had; it is now
+  `tools:$(PYTHONPATH)`.
+
+- **`citations_from_paths` reads `source_kind` instead of testing the
+  collection name against the literal `"wiki"`.** The helper is now the
+  shared implementation for both the orchestrator and `lib_ask`, so it
+  is the fix site: a *library* collection named `wiki` was mislabelled
+  as a wiki page. This is faithful to the code it was extracted from,
+  so not a regression — it is the coupling the extraction now owns.
+  The unknown-path default is unchanged.
+
+- **Three stale prose fixes.** `search.py`'s `QmdLockBusy` arm carried
+  a 14-line body comment whose durable content was one line — the budget
+  is `exc.max_s`, not `_current_timeout()`, because they are different
+  clocks — and twelve lines narrating a rendering bug the fix had
+  already corrected. `server.py` claimed the abandonment middleware is
+  registered "after the ping middleware so the ping is not logged as an
+  abandonment"; `PingMiddleware` was deleted in `469f476`, this
+  branch's first commit, and `mcp.add_middleware` has exactly one call
+  site, so the comment asserted an ordering with a middleware that no
+  longer exists. `README.md`'s daemon-operations section documented the
+  removed middleware at length — accurate, but changelog content, and
+  `CHANGELOG.md` already carried it properly.
+- **Four tests failed on CI only, because `make test` runs neither
+  `--runslow` nor `INTEGRATION=1` — the two gates CI actually uses.**
+  `test_lies_flock_qmd_recycle_invokes_recycle_helper` was a real defect
+  this branch introduced: `recycle_qmd_daemon`'s keyword-only `data_dir=`
+  was renamed to `scope=`, and the test's fake still declared the old
+  name, so the CLI's call raised `TypeError`. The other three were the
+  throwaway-spawn tests, whose "nothing is listening" was qmd's *name*
+  bind (see below) and not a daemon that failed to start.
+
+- **Production LIES could not reach its own qmd daemon on any
+  IPv6-first host.** qmd binds the literal name `localhost`
+  (`dist/mcp/server.js:671`: `listen(port, "localhost")`; there is no
+  `options.host` chain and `QMD_HOST` appears nowhere in `dist/`), and
+  Node takes the *first* family the host resolves it to — `[::1]` where
+  `/etc/hosts` lists `::1 localhost` first. LIES named a literal address
+  at every site that addresses the daemon, so `DEFAULT_QMD_URL`,
+  `lifecycle._HOST` and the `AF_INET` socket behind the port probe all
+  resolved to `127.0.0.1` and were refused. All three now name the
+  host. The probe also moved to `socket.create_connection`, because a
+  socket pinned to `AF_INET` filters name resolution to v4 and
+  reproduces the very refusal the name fixes. Measured against a
+  `[::1]`-only listener with `localhost` resolving v6-first: the old
+  probe returns `False`, the new one `True`. The throwaway-spawn tests
+  already probed the name; this is the same defect on the path the
+  agent actually uses.
+
+  One commit on this branch carries the wrong account and cannot be
+  edited: `862f608` claims qmd reads `options.host ?? QMD_HOST ??
+  "localhost"` at `server.js:725` and calls `listen(port, host)` at
+  `:849`. Re-read from the installed qmd 2.5.3: `dist/mcp/server.js`
+  is 702 lines, `httpServer.listen(port, "localhost", …)` is at `:671`,
+  there is no `options.host` chain, and `grep -rn QMD_HOST dist/`
+  returns nothing. This entry and `AGENTS.md` carry the correct account;
+  the commit message is the wrong one and `git log` is where a reader
+  will meet it.
+
+- **qmd's HTTP daemon binds `localhost`, so probing it by IPv4 literal
+  is wrong on any host that resolves `localhost` IPv6-first.** On the
+  CI runner that resolved to `[::1]`, so qmd logged
+  `listening on http://localhost:57703/mcp` on the port the test
+  requested while `connect(("127.0.0.1", 57703))` was refused —
+  reproducing a "daemon did not start" report for a daemon that was up
+  and serving. `--port` selects the port and nothing else. The
+  throwaway-spawn tests now probe the name qmd binds.
+  The failure message also carries qmd's version, the throwaway cache
+  root, the pidfile, the recorded pid's `/proc` cmdline and qmd's own
+  `mcp.log`, because that log states the URL the daemon actually
+  reached (`server.js:696`) — which is the one fact that separates *did
+  not start* from *started somewhere else*, and the previous message
+  distinguished neither.
+
+- **The recycle-ceiling harness's grace-window bound asserted the
+  runner's timer, not the reap's behaviour.** `GRACE_COST_S` capped the
+  grace row at 6 s, but the harness's window is 20 ms wide and polls
+  every 0.5 ms, so a host that cannot return from a 0.5 ms sleep in
+  under 20 ms measures each window as one sleep long — 27.7 s at real
+  scale on the CI runner, against ~4 s on an idle host. The reap itself
+  is correct and unchanged; the ceiling is now derived from the timer
+  the harness observed, and the structural claim (exactly one
+  configuration spends grace windows, and spends both) is asserted
+  exactly.
+
+- **Docstrings and comments in the qmd-query-singleflight series grew to
+  3,444 lines describing how the work unfolded rather than what the code
+  does.** Measurement results, provenance ("measured 2026-10-10,
+  transcribed not re-measured at commit time"), retractions of theories
+  the code never asserted, review history and vendored `file:line`
+  citations had accumulated in source docstrings. This series moves
+  them to `AGENTS.md` and to this file, where they belong, and leaves
+  behind docstrings that state what a function does, its arguments, its
+  return and its raises. Test docstrings are down to one line each.
+
+  Three,444 → 396 added docstring lines; 879 → 584 added comment lines.
+  **No behaviour change**: stripping every docstring and `#` comment from
+  every `.py` file at both revisions leaves the tree identical except for
+  two assertion *messages* and four AGENTS.md citation line numbers whose
+  subjects moved.
+
+  Two pins needed retargeting rather than re-satisfying.
+  `test_agents_line_refs` tracks AGENTS.md's `file:line` spellings by
+  what the cited line contains, so cutting the docstrings above six spawn
+  sites moved those lines; the numbers were re-derived and AGENTS.md
+  updated alongside them, which is the loop that pin exists to run.
+  `test_a_span_body_is_still_not_checked` keeps asserting that invented
+  text attributed to a really-read page survives — only its failure
+  message's pointer moved from `with_search_diagnostics`'s docstring to
+  the `AGENTS.md` trade paragraph that now owns it.
+
+  Two facts were not already written down anywhere and were moved into
+  `AGENTS.md` rather than deleted: `qmd_lock_async`'s latent reentrancy
+  hazard (`_held_depth` is a `ContextVar`, so a future path acquiring the
+  lock and then dispatching a `query` through a worker thread would run it
+  with no inode held, silently), and the fact that awaiting in that gate
+  buys anyio thread tokens rather than event-loop protection. The network
+  audit's two coverage gaps joined this file, above.
+
+- **`lies mcp down` in `test_full_lifecycle` passed no `--force`.** The
+  test starts its own daemon on a spare port, handshakes it and tears it
+  down, so it means it — and the `DaemonInUse` refusal that a serving
+  daemon earns (stopping the machine-global LIES daemon disconnects every
+  MCP client on the host at once) returns exit 1. The guard is correct
+  and unchanged; the invocation was not. The same omission in
+  `test_down_leaves_the_qmd_daemon_running` is fixed the same way.
+  Neither had CLI-level coverage: `DaemonInUse` was only ever asserted
+  as raised from `stop_daemon`, never mapped to an exit code, which is
+  the gap that let the red invocation sit in the suite. Two tests in
+  `tests/unit/test_cli.py` now pin the mapping and the `--force`
+  pass-through.
+
+- **The vendored `fastmcp` / `anyio` line citations are pinned.** Six
+  references in `AGENTS.md` and `CHANGELOG.md` — `client.py:228`, `:248`,
+  `:587`, `:1045-1048`, `:1080-1084` and
+  `anyio/_core/_synchronization.py:164-168` — pointed into installed
+  distributions and were deliberately left unpinned, on the grounds that
+  they are version-specific and that the doc said so at the reference
+  site. That is a deferral with no due date: a fastmcp bump falsified
+  all six silently. They are now pinned by the same contract as the
+  in-repo references, resolved from the installed distribution, so a bump
+  that moves the code turns the pin red instead. `AGENTS.md` also gained
+  the two citations it described in prose but never numbered.
+  `qmd.js:4008-4013` is still unpinned and says so in the test module's
+  docstring: it lives in a node package's bundled `dist/` and may be
+  absent on a host that has not run qmd.
 
 - **`LibraryWriter.commit` no longer drops the qmd lock path when it
   re-raises `QmdLockBusy`.** It re-wraps the exception it caught, and
@@ -995,7 +1140,7 @@ rule rather than the accident.
   graph and false of the contract. The arms appear rarely because the
   MCP tool path routes through the librarian instead — `ground()`
   calls `access.daemon_tool` directly, so the exception genuinely
-  reaches `grounding.py:468` and `:545` — but an in-process caller
+  reaches `grounding.py:465` and `:535` — but an in-process caller
   reaches them too, and removing either is a contract break rather
   than a cleanup.
 
@@ -1309,10 +1454,13 @@ rule rather than the accident.
 
 Fixed, and every other `file:line` in the shipped docs swept against
   HEAD: `access.py:441`, `capability.py:105`, `daemon.py:426/437/445`,
-  `grounding.py:468`/`:545`, `client.py:1080-1084`, `client.py:228`,
+  `grounding.py:465`/`:535`, `client.py:1080-1084`, `client.py:228`,
   `:587`, `anyio/_core/_synchronization.py:164-168`, `qmd.js:4005`,
   `qmd.js:4008-4013`, `qmd.js:3981-3983`, `store.js:887`,
-  `store.js:428-434`, `ggml-cuda.cu:492`. All correct.
+  `store.js:428-434`, `ggml-cuda.cu:492`. The two `grounding.py` pairs in
+  that list were wrong when written (they named 468/545, which no
+  revision of that sweep matched); they now name the live positions, and
+  the pinned pair lives in `AGENTS.md` rather than here.
 
   A second went stale *during this round*, caught by the new pin:
   rewording the `0.99x` docstring in `daemon_tool` added a line above

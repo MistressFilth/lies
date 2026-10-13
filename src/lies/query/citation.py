@@ -57,16 +57,17 @@ def citations_from_paths(paths: Iterable[str], excerpts: Iterable[Any]) -> list[
 
     ``source`` comes from the librarian's excerpts, keyed by slug,
     because the path alone cannot say which physical root the page lives
-    under. Unknown paths default to ``"wiki"`` — a copy of the
-    orchestrator's pre-existing mapping, not a verdict on the page. See
-    AGENTS.md.
+    under. It reads ``PageExcerpt.source_kind`` rather than testing
+    ``collection != "wiki"``, so a library collection that happens to be
+    named ``wiki`` is still a library page. Unknown paths default to
+    ``"wiki"`` — a copy of the orchestrator's pre-existing mapping, not
+    a verdict on the page. See AGENTS.md.
     """
     by_slug = {excerpt.slug: excerpt for excerpt in excerpts}
     out: list[Citation] = []
     for path in paths:
         excerpt = by_slug.get(path)
-        source: Literal["library", "wiki"] = (
-            "library" if excerpt is not None and excerpt.collection != "wiki" else "wiki"
-        )
+        kind = getattr(excerpt, "source_kind", None)
+        source: Literal["library", "wiki"] = kind if kind in ("library", "wiki") else "wiki"
         out.append(Citation(path=path, source=source))
     return out

@@ -202,6 +202,22 @@ call.**
   and the reader learns the librarian invented the bundle rather
   than that the library has nothing.
 
+  **Two dispatch sites carry a record, one does not.**
+  `librarian_agent_run` (`lib_ask`) and `ground`'s legacy F18 path
+  (`grounding.py`, reached when a tag/exclude resolves to zero
+  collections) both thread a `SearchDiagnostics`, and `ground`
+  forwards the bundle's `transient` / `fallback_reason` onto
+  `ArchivistDigest`. `Orchestrator._register_librarian_tools` does
+  not: it registers once for the agent's lifetime and
+  `agent.tool(name=…)` raises on a double-register, so a record
+  there would have to be shared across dispatches — the exact
+  cross-dispatch leakage the record exists to prevent. What
+  narrows that site instead is `_validate_claim_citations`, and it
+  is narrower than it looks: the quote is checked against the
+  bundle's **own** excerpt bodies, so invented text on a real page
+  is dropped while a wholly fabricated page passes. Say that rather
+  than "the orchestrator validates citations".
+
   **The oracle is hits ∪ reads, not the envelope's hits.** Step 3
   says the model picks from hits, but `read` accepts any path the
   library or a wiki resolves, so a model that followed a link out of
@@ -557,14 +573,17 @@ call.**
   spawning a stray on 8181 while the probe polled 9000. Every spawn now
   threads the port from the URL it will probe
   (`daemon.daemon_port_from_url`). That is **six call sites across four
-  reap-then-respawn locations**: `capability.as_capability`
-  (`capability.py:105`), `access.daemon_tool` (`access.py:322`),
-  `recycle_qmd_daemon` (`daemon.py:429`), and `ensure_qmd_daemon`'s
-  three paths (`daemon.py:329/340/348`). `access.daemon_tool`'s was
-  missed by the first fix and is the hottest of the four, not the
+  reap-then-respawn locations**: `capability.py`,
+  `access.daemon_tool` (`access.py`), `recycle_qmd_daemon`, and three
+  paths in `daemon.py`'s `ensure_qmd_daemon`. `access.daemon_tool`'s
+  was missed by the first fix and is the hottest of the four, not the
   coldest: `_is_daemon_stale()` is true on essentially every call after
-  any write. Pinned by `test_access.py`'s AST check for `access.py` and,
-  separately, by `test_qmd_capability.py` for `capability.py`.
+  any write. `tests/unit/test_agents_line_refs.py` pins the cited file
+  set by content and asserts it is *exhaustive* against the files that
+  actually spawn, so a fifth site inherits the pin instead of escaping
+  it. The citation is file-level on purpose: a `file.py:N` pin into a
+  file this branch edits goes red when a comment is added above the
+  cited line, which is no behavioural change.
 
   **The sidecar records a "scope", and a scope is not an index.** Four
   call sites used to pass four different values (`wiki.wiki_dir`,
@@ -652,7 +671,7 @@ MCP tool path routes through the librarian instead. `lib_ask` goes
 seam section above). `ground()` reaches `access.daemon_tool` directly
 on its unscoped and tagged fast-paths, so the exception arrives as a
 real exception and its own `except QmdLockBusy` arms catch it —
-`grounding.py:463` and `:533`. Two mechanisms, two different
+`grounding.py:465` and `:535`. Two mechanisms, two different
 shapes, both live.
 
 So: the arms are reachable, the digest field has a reader

@@ -45,10 +45,9 @@ unit-test: ## Run unit tests only.
 # and this branch produced three rounds of "looks like a guard, is not"
 # artifacts because a warning in a log reads like a pass. The pre-commit
 # hook runs this target, so this is the commit gate.
-	PYTHONPATH=tools $(PYTEST) $(TESTS)/unit/ \
+	PYTHONPATH=tools:$(PYTHONPATH) $(PYTEST) $(TESTS)/unit/ \
 		-p qmd_unit_network_audit \
-		--ignore=$(abspath $(TESTS)/unit/cli/test_query_cli.py) \
-		--ignore=$(abspath $(TESTS)/unit/mcp/test_tools.py)
+		--ignore=$(abspath $(TESTS)/unit/cli/test_query_cli.py)
 
 .PHONY: features-test
 features-test: ## Run behavior/feature/integration tests (requires INTEGRATION=1).

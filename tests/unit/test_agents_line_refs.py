@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import re
 from importlib.metadata import PackageNotFoundError, version
@@ -22,21 +23,20 @@ DOCS = (AGENTS, CHANGELOG)
 SPAWN = "_spawn_qmd_daemon(port="
 LOCK_BUSY = "except QmdLockBusy"
 
-# Citations AGENTS.md spells as one backticked reference each. The line
-# numbers move whenever a comment is cut, so they are updated alongside
-# the prose they annotate; this pin is what fails when they are not.
-SINGLE_SITES: tuple[tuple[str, Path, str], ...] = (
-    ("capability.py:105", Path(qmd_capability.__file__), SPAWN),
-    ("access.py:322", Path(qmd_access.__file__), SPAWN),
-    ("daemon.py:429", Path(qmd_daemon.__file__), SPAWN),
+# Files AGENTS.md names as the homes of a port-threaded spawn. The pin is
+# content-only and the set is asserted exhaustively: a line-number pin
+# turns red when a comment is added above the cited site — no behavioural
+# change — and it cannot see a new spawn site added *below* the cited one.
+CITE_SITES: tuple[tuple[str, Path], ...] = (
+    ("capability.py", Path(qmd_capability.__file__)),
+    ("access.py", Path(qmd_access.__file__)),
+    ("daemon.py", Path(qmd_daemon.__file__)),
 )
 
 DAEMON = Path(qmd_daemon.__file__)
 GROUNDING = Path(mcp_grounding.__file__)
 
-# ``three paths (`daemon.py:329/340/348`)``
-SLASH_TRIPLE = re.compile(r"three paths \(`daemon\.py:(\d+)/(\d+)/(\d+)`\)")
-# ```grounding.py:463` and `:533```
+# ``grounding.py:465`` and ``:535``
 GROUNDING_PAIR = re.compile(r"`grounding\.py:(\d+)` and `:(\d+)`")
 
 # ---------------------------------------------------------------------------
@@ -147,38 +147,54 @@ def _line(path: Path, lineno: int) -> str:
     return lines[lineno - 1]
 
 
-@pytest.mark.parametrize(
-    ("cited", "path", "required"), SINGLE_SITES, ids=lambda v: getattr(v, "name", v)
-)
-def test_single_cited_references_are_current(cited: str, path: Path, required: str) -> None:
+@pytest.mark.parametrize(("cited", "path"), CITE_SITES, ids=lambda v: getattr(v, "name", v))
+def test_cited_spawn_sites_still_thread_the_port(cited: str, path: Path) -> None:
+    """AGENTS.md names this file as a spawn site; it must still thread the port."""
     assert f"`{cited}`" in _agents_text(), f"AGENTS.md no longer cites {cited}"
-
-    name, _, lineno = cited.rpartition(":")
-    line = _line(path, int(lineno))
-    assert required in line, (
-        f"AGENTS.md cites {cited} for a port-threaded spawn, but that line "
-        f"is now:\n    {line!r}\n"
-        f"expected to contain {required!r}. Either the code moved or the "
-        f"citation is stale — a commit that grew {name} left its own "
-        f"reference behind, which is how this pin earns its keep."
+    assert SPAWN in path.read_text(encoding="utf-8"), (
+        f"AGENTS.md names {cited} as a port-threaded spawn site, but it now "
+        f"has no `{SPAWN}` call. Either the code moved or the citation is stale."
     )
 
 
-def test_slash_triple_spawn_reference_is_current() -> None:
-    """``daemon.py:426/437/445`` is three citations in one backtick span."""
-    match = SLASH_TRIPLE.search(_agents_text())
-    assert match, "AGENTS.md no longer spells the ensure_qmd_daemon paths as one span"
+def test_the_cited_set_matches_the_files_that_thread_the_port() -> None:
+    """The cited set is derived from the code, so a new site inherits the pin."""
+    package = Path(qmd_daemon.__file__).parent
+    threading = {p.name for p in package.glob("*.py") if SPAWN in p.read_text(encoding="utf-8")}
+    assert threading == {name for name, _ in CITE_SITES}, (
+        f"AGENTS.md cites {sorted(n for n, _ in CITE_SITES)} as the spawn "
+        f"sites, but {sorted(threading)} actually call `{SPAWN}`"
+    )
 
-    for lineno in match.groups():
-        line = _line(DAEMON, int(lineno))
-        assert SPAWN in line, (
-            f"AGENTS.md cites daemon.py:{lineno} as a port-threaded spawn; "
-            f"that line is now:\n    {line!r}"
-        )
+
+def test_ensure_qmd_daemon_has_the_three_spawn_paths_the_docs_name() -> None:
+    """AGENTS.md says "three paths"; the function must still have three."""
+    prose = " ".join(_agents_text().split())
+    assert re.search(r"three\s+paths\s+in\s+`daemon\.py`'s\s+`ensure_qmd_daemon`", prose), (
+        "AGENTS.md no longer names ensure_qmd_daemon's three spawn paths"
+    )
+    tree = ast.parse(DAEMON.read_text(encoding="utf-8"))
+    fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "ensure_qmd_daemon"
+    )
+    spawned = [
+        node
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_spawn_qmd_daemon"
+    ]
+    assert len(spawned) == 3, (
+        f"AGENTS.md names three port-threaded spawn paths in ensure_qmd_daemon; "
+        f"{DAEMON.name} now has {len(spawned)}"
+    )
+    assert all(any(kw.arg == "port" for kw in call.keywords) for call in spawned)
 
 
 def test_grounding_lock_busy_pair_is_current() -> None:
-    """``grounding.py:463`` and ``:533`` are ground()'s two QmdLockBusy arms."""
+    """The pair AGENTS.md cites is ground()'s two QmdLockBusy arms."""
     match = GROUNDING_PAIR.search(_agents_text())
     assert match, "AGENTS.md no longer cites the grounding QmdLockBusy pair"
 

@@ -131,9 +131,7 @@ def _tool_name(context: MiddlewareContext[Any]) -> str:
     return "<unknown tool>"
 
 
-# Name the abandonment when a client disconnects mid-call. Registered
-# after the ping middleware so the ping is not logged as an
-# abandonment. Pinned by
+# Name the abandonment when a client disconnects mid-call. Pinned by
 # ``tests/unit/mcp/test_abandoned_call_logging.py``.
 mcp.add_middleware(AbandonedCallMiddleware())
 

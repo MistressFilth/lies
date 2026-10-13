@@ -112,3 +112,49 @@ def test_claim_citation_has_quote_default_empty() -> None:
 def test_claim_citation_quote_settable() -> None:
     cc = ClaimCitation(claim="x", citation_index=0, quote='verbatim "quoted"')
     assert cc.quote == 'verbatim "quoted"'
+
+
+def test_source_comes_from_source_kind_not_the_collection_name() -> None:
+    """A library collection named ``wiki`` is a library page, not a wiki page."""
+    from dataclasses import dataclass
+
+    from lies.query.citation import citations_from_paths
+
+    @dataclass(frozen=True)
+    class _Excerpt:
+        collection: str
+        slug: str
+        source_kind: str = "library"
+
+    out = citations_from_paths(["wiki/a.md"], [_Excerpt(collection="wiki", slug="wiki/a.md")])
+
+    assert out[0].source == "library", (
+        "the discriminator is source_kind; testing the collection name against the "
+        "string 'wiki' mislabels a library collection that happens to be called wiki"
+    )
+
+
+def test_an_unknown_path_still_defaults_to_wiki() -> None:
+    """The default is the orchestrator's own mapping, not a verdict on the page."""
+    from lies.query.citation import citations_from_paths
+
+    assert citations_from_paths(["ghost.md"], [])[0].source == "wiki"
+
+
+def test_a_wiki_excerpt_keeps_its_source_kind() -> None:
+    """The wiki arm is not lost by the switch to source_kind."""
+    from dataclasses import dataclass
+
+    from lies.query.citation import citations_from_paths
+
+    @dataclass(frozen=True)
+    class _Excerpt:
+        collection: str
+        slug: str
+        source_kind: str = "library"
+
+    out = citations_from_paths(
+        ["alpha/a.md"], [_Excerpt(collection="alpha", slug="alpha/a.md", source_kind="wiki")]
+    )
+
+    assert out[0].source == "wiki"

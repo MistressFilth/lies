@@ -15,7 +15,12 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 # phase (see the note in ``test_ask_lock_contention.py``). None of these
 # read the library registry at import time, so importing them outside the
 # per-test XDG isolation fixture is safe.
-from lies.agents.librarian import LibrarianOutput, PageExcerpt, librarian_agent  # noqa: E402
+from lies.agents.librarian import (  # noqa: E402
+    LibrarianOutput,
+    PageExcerpt,
+    librarian_agent,
+    with_search_diagnostics,
+)
 from lies.markdown_spans import Span  # noqa: E402
 from lies.mcp import synth as synth_mod  # noqa: E402
 
@@ -283,6 +288,107 @@ def test_the_attested_bundle_still_reaches_the_synthesizer(
     assert [c.path for c in envelope.citations] == [HIT_PATH], envelope.citations
     assert envelope.synthesis_used is True
     assert envelope.fallback_reason is None, envelope.fallback_reason
+
+
+def test_the_envelope_carries_the_drop_reason_on_a_partial_drop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A partly-dropped bundle synthesizes anyway, so the reason must survive."""
+    _install(
+        monkeypatch,
+        bundle=_bundle(HIT_PATH, INVENTED_PATH),
+        read_paths=[HIT_PATH],
+    )
+    monkeypatch.setattr(
+        synth_mod, "synthesizer_agent_run", lambda lib_out, q: _SynthAnswer(HIT_PATH)
+    )
+
+    envelope = synth_mod.lib_ask.fn(question="what does the daemon bind?", tag_expr=None)
+
+    assert [c.path for c in envelope.citations] == [HIT_PATH], envelope.citations
+    assert envelope.synthesis_used is True
+    reason = envelope.fallback_reason or ""
+    assert INVENTED_PATH in reason, (
+        "a partial drop leaves transient False, so the success path is the "
+        f"only place the reader learns of it; envelope reason was {reason!r}"
+    )
+
+
+def test_the_envelope_keeps_both_reasons_when_the_synthesizer_also_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Neither half is lost: the drop names the page, the fallback names itself."""
+
+    class _FallbackAnswer(_SynthAnswer):
+        def __init__(self, path: str) -> None:
+            super().__init__(path)
+            self.fallback_used = True
+            self.fallback_reason = "answer was truncated"
+
+    _install(
+        monkeypatch,
+        bundle=_bundle(HIT_PATH, INVENTED_PATH),
+        read_paths=[HIT_PATH],
+    )
+    monkeypatch.setattr(
+        synth_mod, "synthesizer_agent_run", lambda lib_out, q: _FallbackAnswer(HIT_PATH)
+    )
+
+    envelope = synth_mod.lib_ask.fn(question="what does the daemon bind?", tag_expr=None)
+
+    reason = envelope.fallback_reason or ""
+    assert INVENTED_PATH in reason, reason
+    assert "answer was truncated" in reason, reason
+
+
+def test_a_clean_run_reports_no_reason_at_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Joining two absent reasons must not manufacture an empty-string reason."""
+    _install(monkeypatch, bundle=_bundle(HIT_PATH), read_paths=[HIT_PATH])
+    monkeypatch.setattr(
+        synth_mod, "synthesizer_agent_run", lambda lib_out, q: _SynthAnswer(HIT_PATH)
+    )
+
+    envelope = synth_mod.lib_ask.fn(question="what does the daemon bind?", tag_expr=None)
+
+    assert envelope.fallback_reason is None, envelope.fallback_reason
+
+
+def test_a_recorded_transient_with_no_reason_is_not_discarded() -> None:
+    """The verdict is the fact; the reason is the gloss."""
+    from lies.agents.librarian import SearchDiagnostics
+
+    bundle = LibrarianOutput(
+        tag_expr=None,
+        exclude_expr=None,
+        excerpts=[],
+        distinct_pages=0,
+        no_coverage=True,
+    )
+    out = with_search_diagnostics(bundle, SearchDiagnostics(transient=True))
+
+    assert out.transient is True, (
+        "a recorded transient carrying no reason is still the recorded truth; "
+        "guarding on the reason alone traded a fact for a string"
+    )
+    assert out.no_coverage is False
+
+
+def test_a_recorded_transient_keeps_the_model_reason_when_the_record_has_none() -> None:
+    """The record overrides a reason, never blanks it."""
+    from lies.agents.librarian import SearchDiagnostics
+
+    bundle = LibrarianOutput(
+        tag_expr=None,
+        exclude_expr=None,
+        excerpts=[],
+        distinct_pages=0,
+        no_coverage=True,
+        fallback_reason="model said so",
+    )
+    out = with_search_diagnostics(bundle, SearchDiagnostics(transient=True))
+
+    assert out.fallback_reason == "model said so", out.fallback_reason
+    assert out.transient is True
 
 
 def test_a_span_body_is_still_not_checked(monkeypatch: pytest.MonkeyPatch) -> None:

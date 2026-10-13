@@ -261,12 +261,19 @@ def port_free(host: str, port: int) -> bool:
 
 
 def _daemon_is_serving(rec: PidRecord, timeout: float = 1.0) -> bool:
-    """Return True when the tracked daemon accepts a streamable-HTTP request.
+    """Return True when a streamable-HTTP connect to the daemon succeeds.
+
+    Measures TCP accept only, which is *not* serving: the kernel
+    completes the handshake into the backlog whether or not the
+    process answers MCP, so a daemon wedged after ``listen()`` probes
+    True. A dead daemon, or one not bound to this address, probes
+    False. ``_down`` therefore refuses with :class:`DaemonInUse`
+    against a wedged daemon — that is the operator's call, and the
+    message names ``--force``.
 
     A TCP reachability probe, not a session count: the registry lives
-    inside the daemon process, and a session count would be flaky since
-    a finished client still holds an open stream. A dead or wedged
-    daemon fails this probe and stops cleanly.
+    inside the daemon process, and a session count would be flaky
+    since a finished client still holds an open stream.
     """
     try:
         # `create_connection` resolves the address family itself.

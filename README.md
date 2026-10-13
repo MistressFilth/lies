@@ -111,17 +111,13 @@ warning, and search runs degraded. Pass `--no-qmd` to skip the step.
 
 A `tools/call` is accepted with `202` and its response is owed on the
 long-lived GET stream, while a qmd search is 12-22s of embed-and-scan
-that sends nothing. That gap once looked like it needed a keepalive:
-the daemon registered a 5s `PingMiddleware` to stop the client tearing
-down an "unwarmed" stream. **It does not any more, and the premise was
-wrong.** A GET stream held open for 30 minutes survived intact,
-carrying one ping and then 29+ minutes of silence — so there was no
-idle stream to keep alive, and a keepalive registered for that failure
-would only add a log line nobody can act on. The observable symptom it
-was chasing — a tool-level interrupt with nothing in the LIES or qmd
-logs — is real, but it has other causes: a timed-out budget, or another
-session's `lies mcp down`, which disconnects every client on the host
-at once.
+that sends nothing, and a held-open stream survives for 30 minutes
+without a keepalive. The observable symptom a keepalive was once
+registered against — a tool-level interrupt with nothing in the LIES or
+qmd logs — is real, but it has other causes: a timed-out budget, or
+another session's `lies mcp down`, which disconnects every client on
+the host at once. See `CHANGELOG.md` for why the middleware was
+removed.
 
 When the daemon is unreachable mid-session, `QmdCapability` falls back to
 an in-process FastMCP server that uses the same `wiki/index.md` path the

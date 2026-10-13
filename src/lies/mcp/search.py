@@ -331,20 +331,10 @@ def _search_impl(
             "fallback_reason": f"qmd timed out after {_current_timeout()}s{detail}",
         }
     except QmdLockBusy as exc:
-        # Ahead of the untyped arm, and this is the site where it is
-        # reachable: the query lock was held past its budget while this
-        # call was dispatching, so the daemon is answering fine and the
-        # caller queued. That is a different fact from "the query
-        # failed" and it wants a different operator action — wait, not
-        # restart — so the holder pid, elapsed wait and budget have to
-        # survive into the string the user reads.
-        #
-        # The budget is ``exc.max_s``, NOT ``_current_timeout()``. The
-        # gate that raised waited on ``query_lock_wait_s()`` (120 s by
-        # default) while ``_current_timeout()`` is the daemon read
-        # deadline (60 s); rendering the latter printed "timed out after
-        # 60s" beside "waited 120.0s, max 120.0s" in one sentence. The
-        # budget belongs to the raiser, so read it off the instance.
+        # Ahead of the untyped arm, and the site where it is reachable:
+        # the daemon answered fine and this call queued, so the action
+        # is wait, not restart. The budget is ``exc.max_s``, not
+        # ``_current_timeout()`` — different clocks.
         return {
             "hit": None,
             "hits": [],

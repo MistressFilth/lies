@@ -1051,8 +1051,21 @@ def test_ground_wires_librarian_tools_before_run_sync(
 
     captured: list[dict[str, object]] = []
 
-    def spy(agent: object, *, wiki: object, memory_service: object) -> None:
-        captured.append({"agent": agent, "wiki": wiki, "memory_service": memory_service})
+    def spy(
+        agent: object,
+        *,
+        wiki: object,
+        memory_service: object,
+        search_diagnostics: object = None,
+    ) -> None:
+        captured.append(
+            {
+                "agent": agent,
+                "wiki": wiki,
+                "memory_service": memory_service,
+                "search_diagnostics": search_diagnostics,
+            }
+        )
 
     monkeypatch.setattr(librarian_mod, "register_librarian_tools", spy)
 
@@ -1103,6 +1116,12 @@ def test_ground_wires_librarian_tools_before_run_sync(
     )
 
     assert len(captured) == 1, f"register_librarian_tools was not called exactly once: {captured}"
+    from lies.agents.librarian import SearchDiagnostics
+
+    assert isinstance(captured[0]["search_diagnostics"], SearchDiagnostics), (
+        "the legacy F18 branch is an LLM dispatch like any other; wiring it "
+        "without a record leaves its excerpts unattested"
+    )
     assert captured[0]["wiki"] is not None
     assert captured[0]["memory_service"] is not None
     # The agent passed to the spy IS the one ``run_sync`` dispatched

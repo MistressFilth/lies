@@ -441,7 +441,9 @@ async def ground(
     from lies.agents.librarian import (
         LibrarianDeps,
         LibrarianOutput,
+        SearchDiagnostics,
         register_librarian_tools,
+        with_search_diagnostics,
     )
     from lies.qmd import access
 
@@ -581,6 +583,7 @@ async def ground(
         # exception branch returns ``no_coverage=True`` on any tool-side
         # failure.
         agent = None
+        diagnostics = SearchDiagnostics()
         try:
             from lies.mcp.resolution import resolve_wiki
             from lies.memory.service import WikiMemoryService
@@ -591,6 +594,7 @@ async def ground(
                 agent,
                 wiki=resolved_wiki,
                 memory_service=WikiMemoryService(resolved_wiki),
+                search_diagnostics=diagnostics,
             )
         except Exception as wiring_exc:
             warnings.warn(
@@ -610,7 +614,7 @@ async def ground(
 
         try:
             librarian_result = agent.run_sync(question, deps=deps)
-            out = librarian_result.output
+            out = with_search_diagnostics(librarian_result.output, diagnostics)
         except Exception as exc:
             _log.error(
                 "ground: librarian dispatch failed: %s: %s",
@@ -680,4 +684,8 @@ async def ground(
         searched_scope=searched,
         unserved_scope=unserved,
         no_library=False,
+        # The bundle's own verdict, so an attestation drop on the legacy
+        # path reads as "the run failed" rather than as a clean miss.
+        transient=bool(getattr(out, "transient", False)),
+        fallback_reason=getattr(out, "fallback_reason", None),
     )

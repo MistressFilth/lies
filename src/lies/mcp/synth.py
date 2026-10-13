@@ -463,6 +463,24 @@ def _build_query_deps(
     )
 
 
+def _join_reasons(*reasons: str | None) -> str | None:
+    """Join distinct reasons into one operator-readable string.
+
+    Args:
+        *reasons: Candidate reason strings; ``None`` and blank are dropped.
+
+    Returns:
+        The de-duplicated reasons joined by ``"; "``, or ``None`` when
+        every candidate was empty.
+    """
+    parts: list[str] = []
+    for reason in reasons:
+        text = reason.strip() if isinstance(reason, str) else ""
+        if text and text not in parts:
+            parts.append(text)
+    return "; ".join(parts) or None
+
+
 def _ask_impl(
     question: str,
     tag_expr: str | None = None,
@@ -558,7 +576,12 @@ def _ask_impl(
         pages_read=getattr(synth_out, "pages_read", []) or [],
         fallback_used=bool(getattr(synth_out, "fallback_used", False)),
         synthesis_used=bool(getattr(synth_out, "synthesis_used", True)),
-        fallback_reason=getattr(synth_out, "fallback_reason", None),
+        # Both reasons, never the synthesizer's alone: a partly-dropped
+        # bundle leaves ``transient`` False, so this is the only arm
+        # where the attestation drop reaches the reader.
+        fallback_reason=_join_reasons(
+            lib_out.fallback_reason, getattr(synth_out, "fallback_reason", None)
+        ),
         searched_scope=list(lib_out.searched_scope or []),
     )
 
