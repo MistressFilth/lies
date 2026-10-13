@@ -168,7 +168,8 @@ def down(
     force: bool = typer.Option(
         False,
         "--force",
-        help="Stop even while the daemon is serving other clients.",
+        help="Accepted for compatibility. Stopping a serving daemon no longer "
+        "requires it; the command warns and stops either way.",
     ),
     name: str | None = typer.Option(
         None,
@@ -183,9 +184,9 @@ def down(
     MCP host are never touched, and qmd's daemon is never touched at all:
     it is machine-global and shared with other wikis and tools.
 
-    The LIES daemon is also shared, so this refuses while it is serving
-    and every other MCP client on the host would be disconnected at
-    once. Pass ``--force`` to stop it anyway.
+    The LIES daemon is shared too. Stopping one that is serving disconnects
+    every MCP client on this host, and their next call fails with nothing in
+    the LIES or qmd logs; the command says so on stderr and stops anyway.
     """
     from lies.cli import resolve_wiki
     from lies.cli._helpers import configure_logging
@@ -194,8 +195,8 @@ def down(
     configure_logging()
     wiki = resolve_wiki(name)
     try:
-        result = daemon.stop_daemon(wiki, grace=grace, force=force)
-    except daemon.DaemonBusy, daemon.DaemonStopFailed, daemon.DaemonInUse:
+        result = daemon.stop_daemon(wiki, grace=grace)
+    except daemon.DaemonBusy, daemon.DaemonStopFailed:
         typer.echo(f"error: {sys.exc_info()[1]}", err=True)
         raise typer.Exit(code=1)
     if result.action == "none":
@@ -204,6 +205,14 @@ def down(
         typer.echo(f"cleared stale pidfile for pid {result.pid}")
     else:
         typer.echo(f"stopped daemon pid {result.pid} ({result.signal})")
+        if result.disconnected:
+            typer.echo(
+                "warning: that daemon was serving — it is shared, so every MCP "
+                "client on this host is now disconnected and its next call will "
+                "fail with nothing in the LIES or qmd logs. Start it again with "
+                "`lies mcp up`.",
+                err=True,
+            )
 
 
 @mcp_app.command(name="status")

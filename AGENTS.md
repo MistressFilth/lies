@@ -483,8 +483,10 @@ call.**
   daemon is machine-global, so one session's `down` drops all of them
   at once — and that *is* a real transport failure, visible as
   `SSE stream disconnected` then `ConnectionRefused` in opencode's log.
-  `down` refuses while the daemon is serving; pass `--force` when you
-  mean it.
+  `down` stops a serving daemon rather than refusing; `--force` is
+  still accepted and gates nothing. The consequence is reported as
+  `StopResult.disconnected` and printed by the CLI on stderr, because
+  `stop_daemon` stays silent and the caller owns presentation.
 - **Three daemon failure modes, three answers.** A *wedge* recycles and
   raises `QmdDaemonWedged` carrying a `mcp.log` tail; no transparent
   retry, because a fresh daemon re-wedges on the same payload.

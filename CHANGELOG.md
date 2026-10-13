@@ -49,6 +49,31 @@ rule rather than the accident.
 
 ### Changed
 
+- **`lies mcp down` stops a serving daemon instead of refusing.**
+  It used to exit 1 with `DaemonInUse` and tell the operator to pass
+  `--force`. The daemon is machine-global, so that guard protected
+  against a consequence the operator was already being told about, at
+  the cost of making the ordinary case — restart the daemon — a two-step
+  command. `down` now stops it and says on stderr that every MCP client
+  on the host was disconnected, because that next call will fail with
+  nothing in the LIES or qmd logs.
+
+  `--force` is **still accepted** and now gates nothing: invocations
+  already in the wild keep working, and the help text says so.
+  `stop_daemon` lost its `force` parameter and `DaemonInUse` is gone,
+  since nothing raised it once the guard was gone — leaving the
+  `except` arm at `cli/operator.py` unreachable.
+
+  The consequence is reported, not printed, by the library:
+  `StopResult.disconnected` is True when the daemon was accepting
+  connections at the moment it was signalled. The CLI renders it.
+  Splitting it that way keeps `stop_daemon` silent and makes the fact
+  assertable without capturing a stream.
+
+  Note the probe is TCP accept only, so a daemon wedged after
+  `listen()` reports `disconnected=True` — the operator is warned, and
+  warned about the daemon they most likely meant to kill.
+
 - **The vendor SDKs are no longer imported to read a roster.**
   `lies.providers.registry` and `lies.providers.resolver` each held a
   module-scope `from anthropic import AsyncAnthropic` /

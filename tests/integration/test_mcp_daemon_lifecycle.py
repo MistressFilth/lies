@@ -175,18 +175,10 @@ def test_full_lifecycle(wiki: Wiki, port: int) -> None:
     assert daemon.read_record(wiki) is not None
     assert daemon.read_record(wiki).pid == record.pid  # type: ignore[union-attr]
 
-    # ``--force`` because the test owns this daemon: it started it on a
-    # spare port four asserts ago and nothing else can reach it.
-    # Without the flag ``down`` refuses, because the LIES MCP daemon is
-    # machine-global and stopping a *serving* one disconnects every MCP
-    # client on the host at once. That guard is correct and is not what
-    # this test is measuring — ``DaemonInUse`` has its own unit coverage
-    # in ``tests/unit/test_mcp_daemon.py`` (``stop_daemon`` raising) and
-    # at the CLI layer in ``tests/unit/test_cli.py`` (exit 1, and
-    # ``--force`` threading through). An earlier version of this line
-    # omitted the flag and asserted exit 0, so it failed against the
-    # guard from ``6b8f2e`` — a pre-existing red, not a regression.
-    down_result = runner.invoke(app, ["mcp", "down", "--force", "--name", wiki.name])
+    # The test owns this daemon: it started it on a spare port four
+    # asserts ago and nothing else can reach it, so stopping a serving
+    # one disconnects no real client.
+    down_result = runner.invoke(app, ["mcp", "down", "--name", wiki.name])
     assert down_result.exit_code == 0
     assert str(record.pid) in down_result.stdout
     assert daemon.read_record(wiki) is None
