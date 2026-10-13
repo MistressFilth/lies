@@ -195,30 +195,11 @@ def _build_lint_report(
 ) -> LintReport:
     """Produce a deterministic :class:`LintReport` for the host-side lint.
 
-    Walks the wiki looking for the cheapest-to-check issues (orphan
-    pages, missing cross-references) so a host-side lint call always
-    yields a real, non-empty artifact. Categories that require an LLM
-    (contradictions, stale claims, data gaps) are recorded with zero
-    findings here -- they still flow through the linter sub-agent in
-    production; this host-side report is the deterministic shell.
-
-    Note: this deterministic shell does NOT currently invoke the
-    linter sub-agent (which would emit its own structured findings);
-    it is the source of truth for findings until that integration
-    is completed. The repair agent consumes the structured
-    ``LintReport`` produced here, not a markdown string.
-
-    Args:
-        wiki: The wiki to lint.
-        repair_receipt: Optional. When provided, the report includes
-            an ``applied`` section describing which repair ops
-            succeeded.
-
-    Returns:
-        A :class:`LintReport` whose ``findings`` field carries the
-        structured findings and whose ``report_markdown`` field
-        carries the formatted report (optionally with a repair
-        section appended).
+    Walks the wiki for the cheapest-to-check issues (orphans, missing cross-references) so a host-side lint always
+    yields a real artifact. Categories needing an LLM are recorded with zero findings — they still flow through the
+    linter sub-agent in production; this is the deterministic shell, and the repair agent consumes its
+    ``LintReport``, not a markdown string. When ``repair_receipt`` is given, the report carries an ``applied``
+    section describing which repair ops succeeded.
     """
     from lies.agents.linter import LintFinding, LintReport, LintSeverity
 
@@ -429,32 +410,18 @@ def _extract_markdown_links(text: str) -> list[str]:
 
 
 def _extract_local_md_links(text: str, source_page_path: str, wiki_root: Path) -> set[str]:
-    """Return the canonical wiki-dir-relative ``.md`` targets of every
-    markdown link in ``text``.
+    """Return the canonical wiki-dir-relative ``.md`` targets of every markdown link in ``text``.
 
-    Filters out:
-    - URL schemes (``http://``, ``https://``, ``mailto:``, ``tel:``)
-    - Absolute paths (rooted at ``/`` or ``\\``)
-    - Non-``.md`` targets
-    - Targets whose resolved path does not exist on disk
+    Filters out URL schemes, absolute paths, non-``.md`` targets, and targets that do not exist on disk. Fragments
+    and query strings are stripped before resolving; relative targets resolve against ``source_page_path``'s
+    directory first, then the wiki directory (see :func:`_resolve_link_target`).
 
-    Strips URL fragments and query strings before resolving. Resolves
-    relative targets against ``source_page_path``'s directory first,
-    then the wiki directory (see ``_resolve_link_target``).
+    Containment is load-bearing: only targets resolving *under* ``wiki/`` are kept. ``../../else.md`` from
+    ``wiki/concepts/a.md`` lands inside ``wiki_root`` but outside the wiki, and without the check
+    ``removeprefix("wiki/")`` would yield ``else.md`` and corrupt the ``pages``-set comparison the orphan and
+    missing_xref heuristics make.
 
-    Containment: only targets that resolve under ``wiki/`` are kept.
-    A link like ``../../somewhere/else.md`` from inside
-    ``wiki/concepts/a.md`` can resolve to ``somewhere/else.md`` — a
-    sibling of the ``wiki/`` directory that lands inside
-    ``wiki_root`` but not inside the wiki itself. Without the
-    containment check, ``resolved.removeprefix("wiki/")`` would yield
-    ``somewhere/else.md`` and corrupt the ``pages``-set comparison
-    used by the orphan and missing_xref heuristics.
-
-    Returns the set in the same wiki-dir-relative convention used by
-    the shell findings' ``pages`` field, so callers can compare
-    resolved links directly against the ``pages`` set without a
-    ``wiki/`` prefix dance.
+    Returned in the same convention as the shell findings' ``pages`` field, so callers compare without a prefix dance.
     """
     targets: set[str] = set()
     for raw in _extract_markdown_links(text):
@@ -482,35 +449,15 @@ def _extract_local_md_links(text: str, source_page_path: str, wiki_root: Path) -
 def _resolve_link_target(source_page_path: str, raw_target: str, wiki_root: Path) -> str | None:
     """Resolve a bare markdown link target to a wiki-relative path.
 
-    Tries resolving relative to the source page's directory first,
-    then relative to the wiki directory itself, and returns the
-    first wiki-relative ``.md`` path that both lands inside
-    ``wiki_root`` AND points at a file that exists on disk. Returns
-    ``None`` when no candidate lands inside the wiki, the result is
-    not a ``.md`` file, or no candidate exists.
+    Tries the source page's directory first, then the wiki directory, and returns the first ``.md`` path that both
+    lands inside ``wiki_root`` *and* exists on disk. ``None`` when no candidate qualifies.
 
-    ``wiki_root`` is the repository root (the parent of the ``wiki/``
-    directory), and ``source_page_path`` is a repo-root-relative
-    path like ``wiki/concepts/a.md``. The wiki-directory fallback
-    therefore prepends ``wiki/`` to ``raw_target`` so a link written
-    as ``[Beta](concepts/beta.md)`` from inside ``wiki/concepts/``
-    resolves to ``wiki/concepts/beta.md`` (the standard layout),
-    not to ``<repo_root>/concepts/beta.md`` (a non-existent
-    sibling of the ``wiki/`` directory).
+    ``wiki_root`` is the repository root (the parent of ``wiki/``) and ``source_page_path`` is repo-root-relative,
+    so the fallback prepends ``wiki/``: a link written ``[Beta](concepts/beta.md)`` from inside ``wiki/concepts/``
+    must resolve to ``wiki/concepts/beta.md``, not to a non-existent sibling of ``wiki/``.
 
-    The "must exist" check fixes the false-positive bug where a
-    source-relative candidate like ``wiki/concepts/concepts/beta.md``
-    is syntactically a valid ``.md`` path inside the wiki but
-    doesn't exist on disk; without the check it shadowed the
-    correct wiki-dir fallback ``wiki/concepts/beta.md``.
-
-    Examples (wiki root = ``/tmp/wiki``):
-
-    - ``wiki/concepts/a.md`` -> ``b.md`` (exists) -> ``wiki/concepts/b.md``
-    - ``wiki/concepts/a.md`` -> ``concepts/b.md`` (exists) -> ``wiki/concepts/b.md``
-    - ``wiki/concepts/a.md`` -> ``concepts/b.md`` (only ``wiki/concepts/b.md`` exists) -> ``wiki/concepts/b.md``
-    - ``wiki/concepts/a.md`` -> ``b.md`` (no match anywhere) -> ``None``
-    - ``wiki/overview.md`` -> ``b.md`` (exists only under concepts) -> ``None``
+    The "must exist" check is load-bearing: without it a source-relative candidate like
+    ``wiki/concepts/concepts/beta.md`` is syntactically valid and shadows the correct fallback.
     """
     wiki_root_resolved = wiki_root.resolve()
     wiki_dir = (wiki_root / "wiki").resolve()
@@ -847,21 +794,11 @@ def _render_footnote_line(
     *,
     title: str | None = None,
 ) -> str:
-    """Render one footnote line.
+    """Render one footnote line as ``[^N]: [title](path#anchor) — section``.
 
-    Format: ``[^N]: [title](path#anchor) — section``
-
-    Anchor rules:
-    - line present → ``#L<line>``
-    - section present, line absent → ``#<slugified-section>``
-    - both absent → no anchor
-
-    Section rules:
-    - section present → `` — section``
-    - section absent → omit suffix
-
-    When ``title`` is ``None``, falls back to the path's last segment
-    (the basename) for a readable link label.
+    The anchor is ``#L<line>`` when a line is present, ``#<slugified-section>`` when only a section is, and absent
+    when neither is; the `` — section`` suffix is omitted when there is no section. ``title`` of ``None`` falls back
+    to the path's last segment for a readable link label.
     """
     display_title = title or citation.path.rsplit("/", 1)[-1]
     anchor = ""
@@ -907,22 +844,12 @@ def _validate_claim_citations(
 ) -> list["ClaimCitation"]:
     """F19 strict validation helper — drop-on-fail for the librarian path.
 
-    ``Orchestrator._call_synthesizer`` (Task 6) routes through this
-    helper. The pre-F19 call path that returned ``(kept, drops)`` is
-    gone.
+    Drops an entry whose ``claim`` is not a substring of ``answer_body``, whose ``citation_index`` is out of range
+    for ``citations``, or whose ``quote`` is not a substring of the cited excerpt's body (resolved via
+    ``librarian_output.excerpts``, so no file is re-read). Returns the surviving :class:`ClaimCitation` entries.
 
-    Drops entries where:
-    - ``claim`` is not a substring of ``answer_body``
-    - ``citation_index`` is out of range for ``citations``
-    - ``quote`` is not a substring of the cited excerpt's body
-      (resolved via ``librarian_output.excerpts`` so we don't
-      re-read files)
-
-    Returns the surviving ``ClaimCitation`` entries. Drop reasons
-    are silently swallowed per spec §"Validation contract" —
-    ``_call_synthesizer`` is the sole caller and the synthesis-
-    reason diagnostic path lives on the synthesizers, not the
-    validators.
+    Drop reasons are silently swallowed per the spec's "Validation contract": ``_call_synthesizer`` is the sole
+    caller, and the synthesis-reason diagnostic lives on the synthesizers, not the validators.
     """
     page_bodies = {e.slug: "\n\n".join(s.body for s in e.spans) for e in librarian_output.excerpts}
     # ``page_bodies`` is keyed by bare slug, but the synthesizer emits
@@ -951,27 +878,14 @@ def _thread_heading_paths(
 ) -> list["Citation"]:
     """Populate ``Citation.heading_path`` from the span each claim cites.
 
-    For every citation that has a matching ``ClaimCitation`` (by
-    ``citation_index``), find the span whose body contains the
-    claim's ``quote``; replace the citation's ``heading_path`` with
-    that span's heading path. Citations without a matching
-    claim, or where no span contains the quote, pass through
-    unchanged.
+    For every citation with a matching ``ClaimCitation`` (by ``citation_index``), finds the span whose body contains
+    the claim's ``quote`` and replaces the citation's ``heading_path`` with that span's heading path. Citations with
+    no matching claim, or where no span contains the quote, pass through unchanged. Runs before filing-back so the
+    ``## Evidence`` block can render ``(Section > Subsection)`` per claim.
 
-    Used by ``_call_synthesizer`` (Task 6) before filing-back so
-    the ``## Evidence`` block in synthesis pages can render
-    ``(Section > Subsection)`` per claim (see
-    ``_render_evidence`` in spec §5).
-
-    The spans index is keyed by ``e.slug`` (bare-slug form) AND
-    mirrored under ``wiki/<slug>`` / ``wiki/<slug>.md`` so the
-    real-F19 synthesizer emission (bare slugs from ``e.slug``) and
-    stub/test emission (``wiki/<slug>.md`` form, what pre-F18
-    tests and canned fixtures still emit) both resolve to the same
-    span set. Without the mirror, threaded citations whose
-    ``path`` is the stub ``wiki/<slug>.md`` form would fall
-    through with ``heading_path=None`` — visible in the filed
-    ``## Evidence`` block as ``(top of page)``.
+    The index is keyed by bare ``e.slug`` *and* mirrored under ``wiki/<slug>`` and ``wiki/<slug>.md``, so the real
+    F19 emission and the stub/canned-fixture emission resolve to the same span set. Without the mirror a stub-shaped
+    ``path`` falls through with ``heading_path=None``, visible as ``(top of page)``.
     """
 
     spans_by_slug: dict[str, list["Span"]] = {}
@@ -1086,21 +1000,12 @@ def _should_file(
 ) -> bool:
     """Filing-back gate (F19) without the catalog query.
 
-    Returns True when:
-    - the agent marked the answer ``should_file=True``
-    - the librarian's bundle covers 2+ distinct pages
-    - the synthesized body is more than a one-line heuristic
-      (≥ 3 lines of non-whitespace text)
+    True when the agent marked the answer ``should_file``, the librarian's bundle covers 2+ distinct pages, and the
+    synthesized body is more than a one-line heuristic (3+ lines of non-whitespace text). The catalog check lives on
+    :meth:`Orchestrator._has_existing_concept_page`, which owns the :class:`WikiMemoryService` access; the
+    orchestrator method wraps this function to add it.
 
-    The catalog check ("already a concept page covering this
-    answer?") lives on :meth:`Orchestrator._has_existing_concept_page`
-    because it owns the :class:`WikiMemoryService` access; Task 7
-    wires that read. The orchestrator's
-    :meth:`Orchestrator._should_file` method wraps this function
-    to add the catalog check.
-
-    Defined as a module-level callable so unit tests can pin the
-    gate independent of the catalog surface — see
+    Module-level so unit tests can pin the gate independently of the catalog surface —
     ``tests/unit/test_orchestrator_filing.py``.
     """
     if not answer.should_file:
@@ -1553,23 +1458,14 @@ class Orchestrator:
     ) -> MemoryReceipt:
         """Apply a pre-built ``plan`` with inline 3-attempt retry on transient errors.
 
-        Sibling of :meth:`file_back_synthesis`. The plan is pre-built by
-        :func:`lies.page.build_author_plan`; this method only handles the
-        apply-with-retry envelope. Never raises — the operator always
-        sees a receipt, even on exhaustion or unexpected exceptions.
+        Sibling of :meth:`file_back_synthesis`; ``plan`` is pre-built by
+        :func:`lies.page.build_author_plan` and this handles only the apply-with-retry envelope. Never raises — the
+        operator always sees a receipt, even on exhaustion or an unexpected exception.
 
-        Defensive refusal seam: when ``plan`` is a
-        :class:`lies.page.author._SectionRefusal` (F17), the orchestrator
-        short-circuits and surfaces the refusal as an errors-as-value
-        ``MemoryReceipt`` without touching the memory service. The
-        primary refusal lives in :func:`build_author_plan`; this seam
-        catches the case where a refusal arrives from a future caller
-        without going through the plan builder.
-
-        Pre-registers plan evidence with ``_memory_service.register_evidence``
-        before each apply attempt so ``validate_operation_evidence`` accepts
-        the plan; without this the receipt carries ``WikiEvidenceMissing``
-        and ``apply_plan`` rejects the plan before any disk write.
+        Two things make it work. A :class:`lies.page.author._SectionRefusal` short-circuits into an errors-as-value
+        ``MemoryReceipt`` without touching the memory service, so a refusal arriving from a future caller cannot escape.
+        And plan evidence is pre-registered with ``_memory_service.register_evidence`` before each attempt: without it
+        ``validate_operation_evidence`` rejects the plan and the receipt carries ``WikiEvidenceMissing`` before any write.
         """
         # F17 defensive refusal seam (Task 3).
         if isinstance(plan, _SectionRefusal):
@@ -1705,29 +1601,15 @@ class Orchestrator:
     ) -> QueryAnswer:
         """Answer a question via the librarian subagent (F18) + synthesizer (F19).
 
-        Steps:
-        1. Build ``LibrarianDeps`` from the question + tag filters.
-        2. Dispatch ``librarian_agent.run_sync(deps)`` to retrieve
-           curated excerpts (4-step contract from the librarian
-           subagent).
-        3. Hand ``LibrarianOutput`` to the synthesizer agent.
-        4. Validate ``claim_citations`` (drop-on-fail) and thread
-           ``heading_path`` onto cited Citations.
-        5. Optionally file the synthesis back as a knowledge page.
+        Builds ``LibrarianDeps``, dispatches ``librarian_agent.run_sync(deps)`` for curated excerpts, hands the
+        ``LibrarianOutput`` to the synthesizer, validates ``claim_citations`` drop-on-fail, threads ``heading_path``
+        onto cited Citations, and optionally files the synthesis back as a knowledge page.
 
-        ``tag_expr`` (Bundle C / F15) is the body of a single include
-        expression; ``exclude_expr`` is a compiled ``TagExpr`` AST
-        (Task 3 / f15-exclude-compound). ``top_n`` is the librarian's
-        ``top_k`` — the maximum number of excerpts the librarian may
-        return. ``file_back`` controls whether the filing-back step
-        runs.
+        ``tag_expr`` is one include expression's body; ``exclude_expr`` a compiled ``TagExpr`` AST; ``top_n`` is the
+        librarian's ``top_k``; ``file_back`` controls the filing step.
 
-        Returns the synthesised ``QueryAnswer`` with validated
-        ``claim_citations`` and ``heading_path`` threads on every
-        cited Citation. The pre-F19 ``SynthesizedAnswer`` shape
-        (citations/pages_read/file_receipt) is no longer the primary
-        surface — the F19 librarian+synthesizer pair returns
-        ``QueryAnswer`` directly.
+        Returns the synthesised :class:`QueryAnswer`. The pre-F19 ``SynthesizedAnswer`` shape is no longer the primary
+        surface — the F19 pair returns ``QueryAnswer`` directly.
         """
         # Back-compat: legacy ``--no-file`` / ``--force-file`` callers keep
         # their surface. ``force_file`` forces file-back independently
@@ -1838,33 +1720,16 @@ class Orchestrator:
         file: bool | None = None,
         force_file: bool | None = None,
     ) -> QueryAnswer:
-        """F1 compat shim — override the synthesizer's auto-routed format.
+        """Compat shim: override the synthesizer's auto-routed format.
 
-        F18/F19 collapsed the pre-F18 ``run_query_with_format`` entry
-        point into ``run_query`` (the F19 prompt handles the format
-        override via its own ``format_hint`` kwarg). Kept as a thin
-        wrapper so the CLI's ``--format`` override path (and the
-        pre-F18 ``test_query_format_e2e`` integration tests) keep
-        their surface. The override is currently best-effort: the
-        synthesizer picks the format it considers best, and this
-        wrapper pins the caller's choice onto the returned
-        ``QueryAnswer`` so downstream renderers see the requested
-        format regardless of what the agent emitted.
+        F18/F19 collapsed the pre-F18 entry point into :meth:`run_query`; this thin wrapper keeps the CLI's ``--format``
+        override and the pre-F18 integration tests working. The override is best-effort — the synthesizer picks the
+        format it considers best and this pins the caller's choice onto the returned :class:`QueryAnswer`, so downstream
+        renderers see what was requested regardless of what the agent emitted.
 
-        Args:
-            question: The user's natural-language question.
-            format_hint: The forced format (``"md"`` / ``"table"`` /
-                ``"marp"``); passed through to the caller-facing
-                ``QueryAnswer.format_hint`` field.
-            cli_format: Alias for ``format_hint`` (F1 pre-F18 name).
-            file: Alias for ``file_back`` (F1 pre-F18 flag).
-            force_file: Alias for ``file_back=True`` (F1 pre-F18 flag).
-            tag_expr, exclude_expr, top_n: Same contract
-                as :meth:`run_query`.
-
-        Returns:
-            The :class:`QueryAnswer` from :meth:`run_query` with
-            ``format_hint`` overridden to the caller's choice.
+        ``question`` is the user's question; ``format_hint`` the forced format (``"md"``/``"table"``/``"marp"``);
+        ``cli_format``, ``file`` and ``force_file`` are the pre-F18 spellings of ``format_hint`` and ``file_back``;
+        ``tag_expr``, ``exclude_expr`` and ``top_n`` match :meth:`run_query`.
         """
         # Resolve F1 aliases first. ``cli_format`` wins when both are
         # present (the F1 CLI passes both for clarity); ``format_hint``
@@ -1905,28 +1770,14 @@ class Orchestrator:
     ) -> QueryAnswer:
         """Run the synthesizer subagent against the librarian's excerpts (F19).
 
-        Wraps the agent's ``QueryAnswer`` with validated
-        ``claim_citations`` and threads ``heading_path`` onto cited
-        Citations before returning the synthesized answer.
+        Wraps the agent's ``QueryAnswer`` with validated ``claim_citations`` and threads ``heading_path`` onto cited
+        Citations. The orchestrator passes ``LibrarianOutput`` directly, so the synthesizer sees the librarian's curated
+        span-aware excerpts.
 
-        The orchestrator passes ``LibrarianOutput`` directly so the
-        synthesizer sees the librarian's curated span-aware
-        excerpts.
-
-        The synthesizer emits citations as path strings (``list[str]``)
-        per the F19 prompt; ``_validate_claim_citations`` and
-        ``_thread_heading_paths`` accept ``list[Citation]`` envelopes.
-        This method bridges the two: it builds ``Citation`` objects
-        (with source discriminator from the librarian's bundle) so the
-        validators can apply their per-index checks uniformly, and the
-        threaded result rides back as the ``citations`` field on the
-        returned ``QueryAnswer``. The runtime type narrowing lets the
-        filed body renderer see span heading context for the
-        ``## Evidence`` block.
-
-        F1 chart addendum: when ``format_hint`` is ``"chart"`` the
-        synthesizer uses the chart-variant system prompt. Other values
-        fall through to the standard prompt.
+        The synthesizer emits citations as path strings (``list[str]``), while the validators take ``list[Citation]``.
+        This method bridges the two by building ``Citation`` objects — with the source discriminator taken from the
+        librarian's bundle — so the per-index checks apply uniformly, and the runtime narrowing lets the filed body
+        renderer see heading context for ``## Evidence``. ``format_hint="chart"`` selects the chart-variant prompt.
         """
         deps = QueryDeps(
             question=question,
@@ -1970,19 +1821,9 @@ class Orchestrator:
     ) -> bool:
         """Filing-back gate (F19): agent verdict + 2+ distinct excerpts + no existing page + substantive.
 
-        Returns True when:
-        - the agent marked the answer ``should_file=True``
-        - the librarian's bundle covers 2+ distinct pages
-        - the catalog has no existing concept page that matches
-        - the synthesized body is more than a one-line heuristic
-          (≥ 3 lines of non-whitespace text)
-
-        Delegates the agent-verdict + distinct-pages + one-liner
-        checks to the module-level :func:`_should_file` so the
-        gate is pinnable without the catalog surface (see
-        ``tests/unit/test_orchestrator_filing.py``). The catalog
-        check stays on the orchestrator instance because it owns
-        the ``WikiMemoryService`` access; Task 7 wires that read.
+        The module-level :func:`_should_file` supplies the agent-verdict, distinct-pages and one-liner checks so the
+        gate is pinnable without the catalog surface. The catalog check stays on the instance because it owns the
+        :class:`WikiMemoryService` access.
         """
         if self._has_existing_concept_page(answer):
             return False
@@ -1991,18 +1832,11 @@ class Orchestrator:
     def _has_existing_concept_page(self, answer: QueryAnswer) -> bool:
         """Query the catalog for a row matching the question-derived slug.
 
-        Returns True when the live catalog at
-        ``<wiki.wiki_dir>/.lies/catalog.db`` has at least one row
-        whose slug equals or ends with ``/<slugified question>``. The
-        filing-back path derives the catalog slug from the slugified
-        question text (``_file_back`` / ``build_author_plan``), so a
-        duplicate filing would re-use the same slug under
-        ``<collection>/<type-plural>/<slug>``; the ``endswith(/{slug})``
-        check matches the catalog's per-collection prefix shape and
-        ignores the prefix branch (``concept-`` vs
-        ``<collection>/concept/``). Falls back to False on any catalog
-        exception so the gate stays fail-open for the unit suite and
-        for fresh wikis whose catalog file hasn't been created yet.
+        True when the live catalog at ``<wiki.wiki_dir>/.lies/catalog.db`` has a row whose slug equals or ends with
+        ``/<slugified question>``. Filing-back derives that slug from the slugified question text, so a duplicate filing
+        would re-use it; the ``endswith(/{slug})`` check matches the catalog's per-collection prefix shape and ignores
+        which prefix branch was used (``concept-`` vs ``<collection>/concept/``). Falls back to False on any catalog
+        exception, keeping the gate fail-open for fresh wikis with no catalog file yet.
         """
         from lies.memory.catalog import list_slugs, open_catalog
 
@@ -2034,17 +1868,11 @@ class Orchestrator:
     ) -> MemoryReceipt | None:
         """Write a synthesis page for the answer.
 
-        Page type: ``synthesis`` when ``distinct_pages >= 2``,
-        ``concept`` otherwise. Body shape per spec Section 5:
-        ``## Thesis`` (the answer), ``## Evidence`` (per-claim span
-        heading inline), ``## Open Questions`` (or "(none)").
+        Page type is ``synthesis`` when ``distinct_pages >= 2`` and ``concept`` otherwise. The body carries ``## Thesis``
+        (the answer), ``## Evidence`` (per-claim span heading inline) and ``## Open Questions`` (or "(none)").
 
-        Returns the ``MemoryReceipt`` from the underlying
-        :meth:`file_back_author` envelope (or ``None`` when the
-        F17 section-contract refusal short-circuits the plan build).
-        The caller (``run_query``) threads the receipt onto
-        ``QueryAnswer.file_receipt`` so the F19 file-back envelope
-        is observable to the operator / CLI / MCP layer.
+        Returns the ``MemoryReceipt`` from :meth:`file_back_author`, or ``None`` when the section-contract refusal
+        short-circuits the plan build. ``run_query`` threads it onto ``QueryAnswer.file_receipt``.
         """
         slug = _slugify(question)
         page_type = "synthesis" if librarian_output.distinct_pages >= 2 else "concept"
@@ -2099,30 +1927,15 @@ class Orchestrator:
     ) -> MemoryReceipt | None:
         """Write a knowledge page via ``WikiMemoryService.apply_plan``.
 
-        Builds a ``MemoryPlan`` through :func:`build_author_plan` and
-        applies it through :meth:`file_back_author` (the same envelope
-        the F3 ``file_back_synthesis`` path uses), so the
-        filing-back path keeps:
+        Builds a ``MemoryPlan`` through :func:`build_author_plan` and applies it through :meth:`file_back_author` — the
+        same envelope ``file_back_synthesis`` uses — which keeps the per-type required-section check, the
+        ``PageCreate``/``PageUpdate`` shape derived from on-disk presence, the 3-attempt retry on transient persistence
+        errors, and the per-op catalog upsert.
 
-        - the per-type required section check (F17),
-        - the ``PageCreate`` vs ``PageUpdate`` shape derived from on-disk
-          presence,
-        - the 3-attempt inline retry on transient persistence errors,
-        - the per-op catalog upsert that runs inside the
-          ``WikiMemoryService`` apply envelope.
-
-        The brief's snippet (``WikiMemoryService.apply_plan(plan,
-        wiki_dir=...)``) doesn't match the real ``WikiMemoryService``
-        API: the service is a per-wiki instance (``self._memory_service``)
-        and its ``apply_plan`` is an instance method (no
-        ``wiki_dir`` kwarg). Delegating to ``file_back_author``
-        reuses the canonical envelope rather than duplicating it.
-
-        Returns the ``MemoryReceipt`` from ``file_back_author`` so the
-        caller (``_file_back`` -> ``run_query``) can thread it onto
-        ``QueryAnswer.file_receipt``. The F17 refusal path returns
-        ``None`` so the operator sees the warning, not a synthetic
-        empty receipt.
+        Delegating rather than duplicating also sidesteps an API mismatch: the service is a per-wiki instance whose
+        ``apply_plan`` takes no ``wiki_dir``. Returns the ``MemoryReceipt`` so ``_file_back`` can thread it onto
+        ``QueryAnswer.file_receipt``; the refusal path returns ``None``, so the operator sees a warning rather than a
+        synthetic empty receipt.
         """
         from lies.page.author import _SectionRefusal, build_author_plan
 
@@ -2158,17 +1971,10 @@ class Orchestrator:
     def _register_librarian_tools(self) -> None:
         """Register ``collections_read`` / ``search`` / ``read`` on the librarian agent.
 
-        Thin delegator to :func:`lies.agents.librarian.register_librarian_tools`
-        so the wiring lives in exactly one place — both the orchestrator
-        (which builds ``self._librarian_agent`` during ``__init__``) and
-        the MCP-layer :func:`lies.mcp.grounding.ground` (which dispatches
-        in-process without instantiating an :class:`Orchestrator`) reach
-        the same closures over ``self._memory_service`` / ``self.wiki``
-        through this entry point.
-
-        See :func:`register_librarian_tools` for the full contract
-        (4-step tools, idempotency caveat, ``wiki_knowledge`` F19
-        follow-up note).
+        Thin delegator to :func:`lies.agents.librarian.register_librarian_tools` so the wiring lives in one place: both
+        the orchestrator (which builds ``self._librarian_agent`` during ``__init__``) and the MCP-layer ``ground()``
+        (which dispatches without an :class:`Orchestrator`) reach the same closures over ``self._memory_service`` and
+        ``self.wiki`` through this entry point. See the delegate for the full contract.
         """
         from lies.agents.librarian import register_librarian_tools
 
@@ -2207,28 +2013,16 @@ class Orchestrator:
     ) -> str:
         """Run deterministic and LLM lint, merge findings, and write report.
 
-        ``force_repair=True`` escalates the cross-process flock
-        contention path: when the wiki memory envelope is held by what
-        looks like a live contender, the underlying
-        :meth:`WikiMemoryService.apply_repair_plan` unconditionally
-        reaps + retries once before surfacing
-        :class:`WikiFlockUnrepairable`. Without the flag, a live
-        contender raises :class:`WikiLockBusy`. Only meaningful when
-        ``apply=True``.
+        ``check`` narrows the *return value* only, matched case-insensitively with an optional plural, and filters
+        before the repair agent runs so ``--fix`` scoped to a check repairs only that check. A ``check`` matching nothing
+        still renders every category, so the caller can read the vocabulary rather than guess.
 
-        ``check`` narrows the merged findings to one category, matched
-        case-insensitively and with an optional plural (``--check orphans``
-        and ``--check orphan`` both select ``orphan``). Filtering happens
-        before the repair agent runs, so ``--fix`` scoped to a check only
-        repairs findings of that check. A ``check`` matching nothing
-        renders the report with every category listed, so the caller can
-        see the vocabulary instead of guessing.
+        The persisted ``<wiki>/lint-report.md`` — behind ``wiki://lint-report`` — always receives the *full* merged
+        report. Writing the narrowed body there meant a read-only scoped query clobbered the artifact for every later
+        reader.
 
-        ``check`` narrows the *return value* only. The persisted
-        ``<wiki>/lint-report.md`` — the artifact behind
-        ``wiki://lint-report`` — always receives the full merged
-        report. Writing the narrowed body there meant a read-only
-        scoped query clobbered the artifact for every later reader.
+        ``force_repair=True`` (only meaningful with ``apply=True``) escalates flock contention: a seemingly live
+        holder is reaped and retried once before :class:`WikiFlockUnrepairable`; without it, :class:`WikiLockBusy`.
         """
         shell_report = _build_lint_report(self.wiki, resolver=resolver)
         llm_report, fallback_reason = self._call_linter()
@@ -2404,23 +2198,14 @@ class Orchestrator:
     ) -> RepairReceipt:
         """Apply a validated repair plan and return a receipt.
 
-        ``ValidatedRepairPlan.dropped_ops`` records the original
-        indices of any redundant ``UpdateIndex`` operations the
-        validator filtered. Those become ``skipped`` entries on the
-        receipt so the user can see why the op was dropped, and the
-        ``applied_repair_kinds`` list is rebuilt from the
-        post-drop ``plan.operations`` to keep its positional pairing
-        with ``memory_receipt.changed_pages``.
+        ``ValidatedRepairPlan.dropped_ops`` records the original indices of redundant ``UpdateIndex`` ops the validator
+        filtered. They become ``skipped`` entries so the user can see why an op was dropped, and
+        ``applied_repair_kinds`` is rebuilt from the post-drop ``plan.operations`` to keep its positional pairing with
+        ``memory_receipt.changed_pages``.
 
-        ``force_repair=True`` flows through to
-        :meth:`WikiMemoryService.apply_repair_plan` and onward into
-        the cross-process flock acquisition. Flock-level errors
-        (:class:`WikiLockBusy`, :class:`WikiFlockUnrepairable`) are
-        re-raised here so the CLI's top-level handlers can exit
-        non-zero with an operator-actionable message; only
-        non-flock failures are captured into ``RepairReceipt.errors``.
-        ``WikiLockBusy`` is the existing behavior;
-        ``WikiFlockUnrepairable`` is new and means manual
+        ``force_repair=True`` flows through to the flock acquisition. Flock-level errors (:class:`WikiLockBusy`,
+        :class:`WikiFlockUnrepairable`) are re-raised so the CLI can exit non-zero with an actionable message; only
+        non-flock failures become ``RepairReceipt.errors``. ``WikiFlockUnrepairable`` means manual
         ``lies flock <name> force-repair`` is required.
         """
         plan = validated.plan

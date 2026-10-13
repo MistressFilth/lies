@@ -700,7 +700,7 @@ MCP tool path routes through the librarian instead. `lib_ask` goes
 seam section above). `ground()` reaches `access.daemon_tool` directly
 on its unscoped and tagged fast-paths, so the exception arrives as a
 real exception and its own `except QmdLockBusy` arms catch it —
-`grounding.py:403` and `:472`. Two mechanisms, two different
+`grounding.py:384` and `:453`. Two mechanisms, two different
 shapes, both live.
 
 So: the arms are reachable, the digest field has a reader
@@ -788,7 +788,7 @@ infer from the field name or its type.
 - **`Citation.source` on `lib_ask` is model-asserted, not verified.**
   `synth._ask_impl` applies no citation validation: the orchestrator's
   `_validate_claim_citations` and `_thread_heading_paths`
-  (`orchestrator.py:2082`/`2085`) run only on the orchestrator path. So
+  (`orchestrator.py:839`/`874`) run only on the orchestrator path. So
   `lib_ask` emits whatever citations the synthesizer asserted. A path
   the librarian never handed over still becomes a `Citation`, defaulted
   to `source="wiki"` — see `query/citation.py` for why that default is
