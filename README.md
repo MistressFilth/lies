@@ -4,34 +4,29 @@
 
 **Library of Inconsistent Explanations & Sources**
 
-Most LLM-document tools work like RAG: drop sources in, retrieve chunks at query time, regenerate an answer. Nothing accumulates. Ask a subtle question that needs five sources synthesized and the model pieces together the same fragments every time.
+Most LLM-document tools work like RAG: drop sources in, retrieve chunks at
+query time, regenerate an answer. Nothing accumulates. Ask a subtle question
+that needs five sources synthesized and the model pieces together the same
+fragments every time.
 
-LIES is different. After every source you add and every question you ask, an agent reads what changed, extracts the key information, and quietly updates the wiki — entity pages, concept summaries, cross-references, contradictions. The wiki is a persistent, compounding artifact. You never (or rarely) write the wiki yourself; the agent maintains it.
+LIES is different. After every source you add and every question you ask, an
+agent reads what changed, extracts the key information, and quietly updates
+the wiki — entity pages, concept summaries, cross-references, contradictions.
+The wiki is a persistent, compounding artifact. You never (or rarely) write
+the wiki yourself; the agent maintains it.
 
-Three layers: **raw/** (your curated sources, immutable), **wiki/** (the agent's markdown; LLM-owned), **schema.md** (the contract that tells the agent how to behave). You curate and ask; the agent does the bookkeeping.
+Three layers: **raw/** (your curated sources, immutable), **wiki/** (the
+agent's markdown; LLM-owned), **schema.md** (the contract that tells the
+agent how to behave). You curate and ask; the agent does the bookkeeping.
 
-## Invisible memory
-
-LIES reads and writes the wiki invisibly during normal interaction:
-
-- The Pydantic AI main agent reaches library collections through the v0.40 library-mode read surface: `lib_ask` for prose answers (librarian + synthesizer), `search` for snippet digests. The pre-rewrite `wiki_search` / `wiki_read` shape is dormant.
-- After the answer, a `MemoryEnricher` sub-agent proposes a structured `MemoryPlan` only when evidence warrants it.
-- The host validates the plan and applies it through `WikiMemoryService`, which writes the page, rebuilds the index, appends the log, commits atomically, and refreshes the qmd derived index.
-- Each invisible write appends one line to `<wiki>/.lies/memory_plans.jsonl`. Inspect with `lies memory`; the MCP resource `wiki://memory-changes` exposes the same data; `lies memory reconcile` rebuilds from `git log` if the sidecar drifts.
-- Material changes surface in a small receipt at the end of the turn. Routine reads and bookkeeping stay out of the response.
-
-Memory captures durable project knowledge (facts, source claims, concepts, contradictions, crosslinks). It never captures user preferences, working decisions, or task history. Source files in `raw/` are immutable.
-
-Transient persistence failures (`WikiLockBusy`, `WikiWriteConflict`, `WikiCommitFailed`) replay automatically on the next turn; receipt surfaces `(memory: queued for retry — <reason>)` immediately and `(memory: deferred after 3 attempts — <reason>)` if the cap is hit.
-
-## Status
-
-MCP server, invisible wiki memory, collection sync, source builders,
-qmd auto-embed after sync, safe lint repair, and the Tier 2 query path
-(F18 librarian subagent, F37 markdown spans parser, F19
-citation-style answers with inline `[[slug]]: "verbatim"` form) are
-available on `main`. Claude Code and other MCP hosts can use the stdio
-server documented below.
+After a question, a `MemoryEnricher` sub-agent proposes a structured
+`MemoryPlan` only when evidence warrants it; the host validates it and
+applies it through `WikiMemoryService`, which writes the page, rebuilds the
+index, appends the log, and commits atomically. Material changes surface in
+a small receipt at the end of the turn. Memory captures durable project
+knowledge — never user preferences, working decisions, or task history.
+Inspect it with `lies memory`; `lies memory reconcile` rebuilds from
+`git log` if the sidecar drifts.
 
 ## Quick start
 
@@ -42,18 +37,13 @@ uv run lies query "What do my sources say about X?"
 uv run lies lint
 ```
 
-The first `ingest --source` invocation writes a deterministic mirror
-file under the library (`$XDG_DATA_HOME/lies/library/collections/<name>/`)
-and registers it in the library catalog. Use `--batch <DIR>` to walk a
-directory of sources into one collection, or `--exclude-stem` /
-`--exclude-dir` to skip noise. The ingest path is purely deterministic
-(no LLM call).
-
-The source directory must be *outside* the collection it writes to.
-Pointing `--batch` at a collection directory — the obvious way to
-"re-sync" one — makes every page both the source and the mirror
-destination, which cannot converge; `ingest` refuses it with exit 2
-rather than running a no-op that reports an error per page.
+The first `ingest --source` writes a deterministic mirror under the library
+(`$XDG_DATA_HOME/lies/library/collections/<name>/`) and registers it in the
+library catalog. Use `--batch <DIR>` to walk a directory of sources into one
+collection, `--exclude-stem` / `--exclude-dir` to skip noise. Ingest is
+deterministic (no LLM call). The source directory must be *outside* the
+collection it writes to — pointing `--batch` at a collection directory
+cannot converge, so `ingest` refuses it with exit 2.
 
 Launch the REPL (no subcommand) for an interactive session:
 
@@ -64,9 +54,8 @@ lies> /help
 
 ## Using LIES from Claude Code
 
-LIES ships an MCP server. Register it with Claude Code once and the
-wiki becomes available as tools and resources in any Claude Code
-session:
+LIES ships an MCP server. Register it with Claude Code once and the library
+becomes available as tools in any Claude Code session:
 
 ```bash
 # Register for the current user, defaulting to wiki name "default":
@@ -77,430 +66,70 @@ claude mcp add --transport stdio --env LIES_WIKI_NAME=my-research \
     lies -- uv run --project /path/to/lies lies mcp
 ```
 
-The stdio form above spawns one server per host session and is the right
-default for single-session use.
-
-To keep a warm server running independently of any host, run it as a
-daemon:
+To keep a warm server running independently of any host, run it as a daemon:
 
 ```bash
 lies mcp up                      # detached; prints the URL
 claude mcp add --transport http lies http://127.0.0.1:8737/mcp
 lies mcp status                  # pid, URL, uptime, log path
-lies mcp down                    # stop it
+lies mcp down                    # stop it (also stops qmd; --no-qmd keeps it)
 ```
 
-`lies mcp up` binds `127.0.0.1:8737` by default. Pass `--port` to
-run a daemon for a second wiki; `--host` may select another loopback
-address such as `localhost`, `::1`, or any address in `127.0.0.0/8`.
-The daemon is per-wiki — its pidfile lives at
-`$XDG_RUNTIME_DIR/lies/<name>/mcp.pid` and its output goes to
-`$XDG_STATE_HOME/lies/<name>/mcp.log`.
+`lies mcp up` binds `127.0.0.1:8737` by default (`--port` / `--host` to
+change). The daemon is per-wiki — pidfile at
+`$XDG_RUNTIME_DIR/lies/<name>/mcp.pid`, log at
+`$XDG_STATE_HOME/lies/<name>/mcp.log`. `lies mcp down` only stops daemons
+that `up` recorded, so it never kills a live stdio session. The daemon is
+machine-global, so `down` disconnects every client on the host at once; it
+says so on stderr and stops anyway. `--force` is accepted and gates nothing.
 
-`lies mcp down` only stops daemons that `up` recorded. Servers a host
-spawned on stdio are left alone, so stopping the daemon never kills a
-live Claude Code session.
+`lies mcp up` also ensures qmd's own daemon is running (qmd is the search
+backend; `--no-qmd` skips it). When qmd is unreachable mid-session,
+`QmdCapability` falls back to an in-process server and tags every search
+result `degraded: True` so the model knows it was not qmd-backed.
 
-`lies mcp start` runs the stdio server in the foreground — the explicit
-spelling of bare `lies mcp`, which is unchanged.
+## MCP tools
 
-`lies mcp up` also ensures qmd's own MCP daemon is running, and the
-agent's search routes through it. qmd is optional: if it is not
-installed or fails to start, the LIES daemon still comes up with a
-warning, and search runs degraded. Pass `--no-qmd` to skip the step.
+Once registered, a host sees:
 
-A `tools/call` is accepted with `202` and its response is owed on the
-long-lived GET stream, while a qmd search is 12-22s of embed-and-scan
-that sends nothing, and a held-open stream survives for 30 minutes
-without a keepalive. The observable symptom a keepalive was once
-registered against — a tool-level interrupt with nothing in the LIES or
-qmd logs — is real, but it has other causes: a timed-out budget, or
-another session's `lies mcp down`, which disconnects every client on
-the host at once. See `CHANGELOG.md` for why the middleware was
-removed.
+- `collections_read(subcommand, name?)` — live library registry.
+  `list` (one row per collection), `tag_list` (tag → collections map),
+  `info` (one collection's metadata; requires `name`).
+- `search(question, tag_expr?, exclude_tags?, hypothetical?)` — single-batch
+  hybrid vec+lex query. Returns `hit`/`hits` with snippets, plus
+  `searched_scope` and `unknown_tags`.
+- `read(paths)` — verbatim page bodies, one `get` per path. Paths qmd could
+  not resolve come back under a synthetic `_missing` key; a batch is never
+  silently narrowed.
+- `lib_ask(question, tag_expr?, exclude_tags?, format?)` — synthesized,
+  inline-cited answer (`[[slug]]: "verbatim text"` per claim).
+- `lint(name?, check?, fix?)` — corpus health report; `--fix` applies the
+  safe repairs.
+- `reindex(name?, all?, embed?, force?, ...)` — rebuild the qmd index.
+  Destructive flags: `all` and `cleanup` (both confirm).
 
-When the daemon is unreachable mid-session, `QmdCapability` falls back to
-an in-process FastMCP server that uses the same `wiki/index.md` path the
-host `query` tool already used, prints a single stderr warning naming the
-URL and the fix (`LIES_QMD_URL` or `qmd mcp --http --daemon`), and tags
-every search result with `degraded: True` so the model knows the search
-was not qmd-backed. Set `LIES_QMD_TRANSPORT=stdio` to opt back into a
-`qmd mcp` subprocess per agent.
+### `search` return fields
 
-`lies mcp down` also stops qmd's daemon. That daemon is machine-global —
-one fixed port, one index shared across every wiki and any other tool
-using it — so stopping it would break sessions LIES knows nothing about.
-Pass `--no-qmd` to leave it running when that is the case you are in.
+- `hit` / `hits` — ranked results with snippets and scores.
+- `searched_scope` — the collections actually searched (every registered
+  collection when untagged). Never widened on a filter error.
+- `unknown_tags` — unresolvable `tag_expr` atoms, reported whole.
+- `no_coverage` — true when qmd ran and found nothing. A claim about the
+  **corpus**.
+- `transient` — true when the dispatch did not finish (wedge, deadline,
+  error). A claim about the **run**, not the corpus. Retry once; if it stays
+  transient, report the lookup as inconclusive rather than as empty.
+- `fallback_reason` — why the dispatch returned no hits; carries qmd's own
+  last output on a timeout.
 
-### QMD daemon recycle
-
-`lies` recycles the qmd daemon automatically when a tool call
-surfaces a transport error (qexpander cold-start wedge, daemon down,
-or fastmcp-wrapped timeout). The recycle path is wrapped around the
-underlying `MCPToolset` via `QmdRecycleToolset`; see
-`src/lies/qmd/mcp.py` for the ReadTimeout-vs-TransportError
-distinction. Explicit timeouts (`connect=2.0, read=60.0, write=10.0`)
-are set via `httpx_client_factory` so a wedged daemon surfaces
-within one budget window.
-
-Manual operator trigger:
-
-```bash
-lies flock qmd recycle --name <wiki> --ready-timeout 30
-```
-
-If the daemon is serving a stale index (any wiki or library wrote to
-disk since the daemon was spawned), `ensure_qmd_daemon` reaps and
-respawns it on the next call. The `LibraryWriter` envelope touches
-the global `<XDG_CACHE_HOME>/qmd/last-write-marker` sentinel on every
-successful commit; `ensure_qmd_daemon` reads its mtime to detect
-staleness. The construction-time check in `QmdCapability.as_capability`
-closes the gap between out-of-band writes and the agent's first search:
-if the marker indicates staleness when the capability is built, the
-daemon is reaped and respawned before the native toolset is advertised.
-
-The daemon has no authentication, so `up` and the internal `_serve`
-command refuse non-loopback bind hosts. Put an authenticated reverse
-proxy in front if remote access is required.
-
-After registration, Claude Code sees these tools (v0.40 surface):
-
-- `collections_read(subcommand, name?)` — live library registry reader.
-  Subcommands: `list` (one row per collection), `tag_list` (tag →
-  collections map, qualifier prefix stripped), `info` (single
-  collection's full metadata; requires `name`).
-- `search(question, tag_expr?, exclude_tags?, hypothetical?)` —
-  single-batch hybrid vec+lex qmd query. Returns top-1 + top-10
-  ranked hits with snippets, plus `searched_scope` and
-  `unknown_tags`.
-
-  An atom with no qualifier names a **tag**; `t:` says so explicitly and
-  resolves identically; `c:` is a strict collection-name match. `|` unions
-  and `&` intersects over the collection sets the atoms name, and a
-  `t:`/bare atom also matches a collection by its own name (the implicit
-  self-tag). So `plugins`, `t:plugins`, and `plugins|legacy` are all
-  filter expressions, and `c:opencode` is the only spelling that means
-  the collection called `opencode` and nothing else. An atom in neither
-  vocabulary, or a tree that selects no collection, is reported whole in
-  `unknown_tags` with an empty `searched_scope` — the scope is refused,
-  never widened to the whole library.
-- `read(paths)` — verbatim page bodies. Wiki page IDs route to
-  `memory_service.read`; library paths (`<collection>/<page>`) route
-  to the qmd daemon's `get` with `lineNumbers: false`, over one MCP
-  session for the whole batch. Source-aware dispatch.
-
-  The response maps each resolved path to its body. Paths qmd could
-  not resolve are omitted from that mapping and returned under the
-  synthetic key `"_missing"` as a list, in input order — filter it
-  with `key.startswith("_")` if you iterate the dict. A batch that
-  resolves nothing raises rather than returning an empty map. A slow
-  or unreachable daemon raises a typed error rather than appearing as
-  a missing path, so `"_missing"` means "not in the index" and never
-  means "the daemon failed".
-- `lib_ask(question, tag_expr?, exclude_tags?, file_back?)` — prose
-  answer for human reading. Calls the librarian subagent (Classify →
-  Search → Read → Return 4-step pipeline) then the synthesizer.
-  Returns a `SynthesizeEnvelope` with `answer`, `citations`,
-  `pages_read`, `searched_scope`, `fallback_used`, `synthesis_used`,
-  `fallback_reason`.
-- `lint(name?, check?, fix=False, force_repair=False)` — health-check
-  the wiki; `fix=True` applies the repair plan for `safe_to_fix`
-  findings. `check` narrows the report (and the repair) to one finding
-  category, matched case-insensitively with an optional plural:
-  `orphan`, `missing_xref`, `missing_page`, `missing_required_section`,
-  `dangling_derived_from`, `contradiction`, `stale`, `data_gap`. A
-  `check` that matches nothing renders the report with the available
-  categories listed.
-- `reindex(cleanup?, all_?, embed?, force?, reconcile?, name?)` —
-  rebuild qmd index. Destructive flags (`cleanup` / `all_`) elicit
-  confirmation via `ctx.elicit`.
-- `list_prompts()` — the prompt inventory as JSON, with each prompt's
-  argument names and descriptions.
-- `get_prompt(name, arguments?)` — renders the named prompt and
-  returns its messages. Tool-call arguments are not pre-tokenized, so
-  a full multi-word question reaches the prompt body intact; this is
-  the path for user questions.
-
-…and these resources:
-
-- `library://catalog` — every registered library collection's
-  metadata (name, tags, source, page_count, updated_at) as a
-  per-collection JSON grouping.
-
-…and these prompts (v0.42 surface). Every prompt takes one `str` and
-parses its own flags. One slot makes the slash path *safe*, not
-*complete* — the host binds exactly one token and drops the rest, so
-reach these through the `get_prompt` tool for anything multi-word:
-
-- `ask(tail: str)` — synthesized cited answer. `+tag` / `-tag`
-  filter tokens are parsed out of the **leading run** of the tail by
-  the prompt body and routed into `tag_expr` / `exclude_tags` on the
-  dispatched calls. A filter must look like a tag (a `:` qualifier, or
-  two or more characters) and sit before the first question word, so a
-  question *about* option flags — "what does `-e` do" — keeps its
-  words. The parameter is named `tail` like the other six, so a caller
-  using the retired `{"question": …, "tag_expr": …}` shape gets an
-  error rather than a body that quietly searches the whole library.
-- `ground(tail: str)` — cite-snippet digest (no synthesis). Same
-  filter-token contract as `ask`, plus `--top_k N` (also `--top_k=N`),
-  clamped to [1, 10], default 3. A non-integer or out-of-range value
-  is named in the body rather than silently corrected.
-- `collections(tail: str)` — registry CRUD. `<subcommand> <args…>`;
-  subcommands `list`, `show` (alias `info`), `new` (alias `add`),
-  `modify`, `delete` (alias `remove`), `where`, `enrich-tags`, `tag`
-  (`<slug> <tag…>` or `tag <slug> --tag <t>`, both rendered as
-  `modify --tag`), `bootstrap-all` (alias
-  `register-shipped`). Flags: `--source` / `--prompt` on `new`; `--tag`
-  / `--untag` / `--set` / `--from-file` on `modify`; `--json` on
-  `list`. The tail is whitespace-separated and quote characters are
-  literal, so an argument that needs an embedded space is not
-  expressible here — run the `lies library` Bash command directly for
-  that. A positional the subcommand has no slot for is reported in the
-  body rather than appended to the rendered command, a subcommand
-  missing its required name renders no command at all, and a flag the
-  subcommand does not declare is named along with the word that
-  followed it — that word is not the flag's value, and treating it as
-  a positional is how a typo became a collection name.
-- `ingest(tail: str)` — bring a source into the library. Either
-  `<source>` or `--batch <dir>`, plus optional `--source`,
-  `--collection`, `--slug`, `--title`, `--slug-prefix`,
-  `--exclude-stem`, `--exclude-dir`, `--force`, `--dry-run` (each
-  `--force` / `--dry-run` also has its `--no-` form, and the negated
-  spelling renders rather than being dropped). A bare path binds to
-  `--source`; passing both a path and `--source` renders a body that
-  asks which one you meant rather than guessing. A single `--source`
-  also needs `--collection` or `--slug-prefix` — the CLI derives a
-  collection name from a *batch* parent directory but never from one
-  source, so the body asks for the name rather than rendering a command
-  that exits 2. `--title`
-  takes free text (every word up to the next flag), so a source typed
-  after it is read as part of the title — put the source first or
-  attach it with `--source <path>`; the body says so whenever
-  `--title` is set. The rest take one token. There is no `--delete`
-  verb — nothing in the CLI removes an ingested page, and `lies library
-  delete` removes a collection's `config.yaml`, not a page.
-- `lint(tail: str)` — health-check. `<check>` or `--check <name>` (one
-  finding category, plural tolerated), `--fix`, `--name <wiki>`,
-  `--force-repair`. `check` narrows this call's
-  return value and the `log.md` entry counts it (`check=orphan,
-  2/20 matched`); the persisted `<wiki>/lint-report.md` behind
-  `wiki://lint-report` always holds the full report. `lies lint
-  --check <name>` carries the same scoping on the CLI. A blank
-  `--check=` refuses: the tool reads an empty check as *no filter*, so
-  running it would return the full report for a scoped request, and a
-  note on a live call is a weaker answer than no call.
-- `reindex(tail: str)` — rebuild the search index. `--reconcile`,
-  `--embed`, `--force`, `--cleanup`, `--all`, `--name <wiki>`.
-  `all`, `all_` and `--all` are the same destructive marker. `--name`
-  takes exactly one token, so `--name pydantic all` reindexes
-  `pydantic` with the destructive marker set. A positional the verb
-  takes no slot for is reported rather than dropped — `--name` is the
-  only way to scope a reindex, so a bare word is worth naming.
-- `sync(tail: str)` — pull + ingest remote sources. The tail is a
-  *request*, not a flag list: the body carries it to the agent
-  verbatim, and the agent identifies the collections it names —
-  grounding ambiguous names against `collections_read` and asking
-  before dispatching. A request naming no collection (`sync the
-  library`) leaves the positional off, which is how `lies sync`
-  covers every collection with a scraper. Flags are still parsed
-  deterministically and threaded into each call: `--source`,
-  `--name`, `--force`, `--wait`, `--fail-busy`, `--wizard`,
-  `--skip-reindex`; each paired boolean also takes its `--no-` form,
-  `--no-wait` and `--no-skip-reindex` among them. `lies sync` takes one
-  positional per invocation, so N collections is N commands. An
-  unrecognized flag refuses here: a typo that swallowed the only
-  positional would sync every registered collection.
-
-Every prompt tail is split on whitespace. Flag values bind as
-`--flag=value` or `--flag value`; a value flag given no value, a value
-attached to a boolean, or a flag outside the prompt's vocabulary,
-renders a body that names the problem instead of running a command the
-user did not ask for. A boolean written `--all=true` is still set — the
-value means nothing on a switch, and the body says it was discarded.
-A bare `--` terminates flags, and a single-dash token (`-p`) is named
-as a typo rather than passed through: Click rejects it, and a bare
-`lies sync` means every collection. Because the split is
-whitespace-only, quote characters inside a value are literal and are
-stored as part of it; the body names that rather than re-splitting.
-
-Hosts bind prompt names under their server prefix (e.g. `/lies:ask`).
-One-string parameters are what make the slash path work at all: hosts
-pre-tokenize the tail on whitespace and bind tokens positionally, so a
-typed `bool` / `int` / `list[str]` past position one receives a bare word
-and fails decode. That same pre-tokenization makes the slash form
-**single-token only** — everything after the first token is overflow and
-is dropped, so `/lies:ask +c:opencode why` receives only `+c:opencode` and
-renders the "no question given — only filter tokens arrived" body. Tool-call
-arguments are not pre-tokenized, so `get_prompt` is the path for any
-multi-word question.
-
-Wiki selection: every tool accepts an optional `name` parameter.
-Resolution chain: explicit `name` → `LIES_WIKI_NAME` env → `default`.
-For multi-project workspaces, register one MCP server per wiki.
-
-## Source collection builders
-
-LIES can ingest PDF, Sphinx, HTML, Liquid, and bespoke source corpora.
-All four named formats are first-class; bespoke dispatches user-provided
-scrapers for other formats.
-
-## Tier 2 query path (F18 + F37 + F19)
-
-The Tier 2 query path replaces the bare "synthesize over qmd hits"
-loop with a librarian-driven retrieval + inline-citation renderer.
-Three changes:
-
-- **F18 — Librarian subagent** (`src/lies/agents/librarian.py`).
-  Pydantic-ai in-process subagent that runs the 4-step contract
-  (classify → search → read → return bundle). Carries `LibrarianDeps`,
-  returns `LibrarianOutput` over `PageExcerpt`s. Ported from
-  `ask/skills/ask/librarian-prompt.md`; the validator-workaround
-  rewrite rules are ported for qmd's vec-query hyphen guard.
-- **F37 — Markdown spans parser** (`src/lies/markdown_spans.py`).
-  `parse_spans(text) -> list[Span]`. Each `Span` carries
-  `(heading_path, body, code_fence, start_line)`. Code-fence spans are
-  flagged and excluded from prose excerpts by downstream consumers.
-  `PageRead.spans` is populated at read time via `parse_spans(content)`.
-- **F19 — Citation-style answers.** Synthesizer emits
-  `[[page-slug]]: "verbatim text"` inline per claim — no footnote
-  block, no anchor numbers. `Citation.heading_path` carries the span
-  path each claim cites; `ClaimCitation.quote` is validated to appear
-  verbatim in the cited span body. Filing-back renders the same
-  `[[slug]] (Heading > Subheading): "verbatim"` form inside `## Evidence`.
-
-The synthesized answer body renders the inline form per claim; the
-existing `[^N]` footnote markers and the orchestrator's footnote
-block are gone for new synthesis. Existing footnote-rendered wiki
-pages stay footnote (no re-render); a `stale_citation_form` lint
-finding surfaces them and `lies lint --fix` re-renders in a follow-up
-PR. Hard cutover for new synthesis only — no opt-in flag.
-
-The data shapes that flow through this path:
-
-- `Span(heading_path, body, code_fence, start_line)` — F37.
-- `PageRead.spans: list[Span]` — F19; replaces `PageRead.excerpt`.
-- `Citation.heading_path: list[str] | None` — F19; populated by
-  `_thread_heading_paths` from the cited span.
-- `ClaimCitation.quote: str` — F19; default `""`; validated verbatim.
-- `LibrarianDeps`, `PageExcerpt`, `LibrarianOutput` — F18.
-
-Spec: `~/code/project-notes/lies/superpowers/specs/2026-09-19-tier2-query-path-design.md`.
-
-## Search tool
-
-The v0.40 `search` MCP tool (`src/lies/mcp/search.py`) is the
-single-batch hybrid vec+lex qmd query. Replaces the prior
-`ground` MCP tool (retired in v0.40) and the per-collection fan-out
-that called qmd once per registered collection.
-
-```python
-search(
-    question: str,
-    tag_expr: str | None = None,        # F15 include body, no leading sigil
-    exclude_tags: list[str] | None = None,  # F15 NOT atoms (reserved)
-    hypothetical: str | None = None,    # optional denser paraphrase
-) -> dict
-```
-
-The returned dict carries:
-
-- `hit` — top-1 ranked hit (`{path, snippet, score, ...}` or `None`).
-- `hits` — up to 10 ranked hits with snippets.
-- `searched_scope` — sorted list of resolved collection names (or
-  every registered collection when untagged).
-- `unknown_tags` — list of unparseable / unknown `tag_expr` atoms.
-- `no_coverage` — true when qmd ran and returned no hits. A claim
-  about the **corpus**: this search found nothing. It is `false` for
-  every process failure, because a search that did not finish learned
-  nothing and has no standing to assert the library is empty.
-- `transient` — true when the search did not finish: the daemon
-  wedged, the call outlived its deadline, or an error outside the
-  transport taxonomy propagated. A claim about the **run**, not the
-  corpus. Retry once; if it stays transient, report the lookup as
-  inconclusive rather than as missing content.
-- `fallback_reason` — error string when the dispatch did not return
-  hits. Carries qmd's own last output on a timeout, so a stall can be
-  attributed to expansion, embedding, or reranking.
-
-The per-call deadline is 60s, overridable with
-`LIES_QMD_FANOUT_TIMEOUT` (seconds). One getter —
-`lies.config.get_qmd_query_timeout` — supplies it to every qmd
-*retrieval* call site (the `search` tool and the grounding fan-out),
-so the two cannot drift apart. It was previously 15s in the fan-out
-and 15s hardcoded in `search`; measured warm latency against the
-5987-document corpus is 5.6–6.0s.
-
-Liveness probes are deliberately excluded. `lies qmd up` / `status`
-keep 15s/5s (`qmd.lifecycle.DAEMON_START_TIMEOUT_S`,
-`PROBE_TIMEOUT_S`, `qmd.daemon.STATUS_TIMEOUT_S`) because a slow
-answer to "is this alive?" is itself the failure — a wedged daemon
-should be reported, not waited on.
-
-Library-wins-on-slug-conflict merge happens inside qmd. The
-`exclude_tags` parameter is preserved for forward compatibility
-with the F15 grammar but is no-op today (the include filter
-already constrains the addressable collection set).
-
-The `ArchivistDigest` / `CitationSnippet` dataclasses still live at
-`src/lies/mcp/grounding.py` for Python callers (`synthesize`, tests,
-integration scripts); the module is not itself a registered MCP tool.
-
-`ArchivistDigest` carries four fields that answer different questions
-and must not be collapsed:
-
-- `no_coverage` — the retrieval finished and found nothing. A claim
-  about the corpus.
-- `transient` — the dispatch failed. A claim about the run. A digest
-  with `transient=True` has `no_coverage=False` even with zero
-  citations, because a dispatch that never ran learned nothing.
-- `searched_scope` — the collections actually dispatched.
-- `unserved_scope` — the requested collections the qmd daemon does
-  not serve, in input order, disjoint from `searched_scope`. An empty
-  `searched_scope` with a populated `unserved_scope` means nothing
-  was searched; that is a scope problem, not an empty corpus, and the
-  names are logged at warning.
-
-Spec: `~/code/project-notes/lies/superpowers/specs/2026-09-26-librarian-v040-port-design.md`.
-
-## Page authoring
-
-`lies page write` writes one markdown page directly to the wiki through
-`WikiMemoryService.apply_plan`. Use it to author concept / entity /
-comparison / overview / source / synthesis pages from any context the
-agent isn't already covering.
-
-```bash
-# Write a concept page (body from stdin)
-echo "## Definition
-A hook intercepts events at fixed points." | \
-  lies page write --collection claude-code --type concept \
-    --slug hooks --title "Hooks" --body-file -
-
-# Overwrite an existing page
-lies page write --collection claude-code --type concept \
-  --slug hooks --title "Hooks" --body-file body.md --force
-```
-
-The MCP writer (`mcp__plugin_lies__file_knowledge`) was retired in
-the library-mode read-side rewrite — the current v0.40 MCP surface
-is read-only (`collections_read` / `search` / `read` / `lib_ask` /
-`lint` / `reindex`). Wiki writes still go through
-`lies page write` from the CLI; a future write-tool spec will
-restore an MCP write surface.
-
-Each page type carries a set of required `## <Heading>` sections (see
-`src/lies/schema/default_schema.md` → "Section contract"). The CLI
-refuses writes that omit them; `lies lint` surfaces them as
-`missing_required_section` findings (`safe_to_fix=False`). Override
-per-wiki via `<wiki>/schema.md`. The match is literal-substring —
-`## Evidence` matches, but `### Evidence`, `##Evidence`, and
-`## evidence` do not.
+The per-call deadline is 60s (`LIES_QMD_FANOUT_TIMEOUT`); liveness probes
+keep a short one, because a slow answer to "is this alive?" is itself the
+failure.
 
 ## Tag-filter language
 
-Filter `lies query` to library collections by name. `&` binds tighter
-than `|`; `-tag` excludes; quoted tags (`+"airflow provider"`) allow
-spaces.
+Filter to library collections. `&` binds tighter than `|`; `-tag` excludes;
+quoted tags (`+"airflow provider"`) allow spaces.
 
 ```bash
 lies query +airflow what are DAGs?
@@ -508,720 +137,70 @@ lies query +airflow&amazon -python what connectors?
 lies query --tag-expr "airflow|spark" --exclude-tag aws what is X?
 ```
 
-**The library is the source of truth for collections.** Library
-collections live as directories under
-`$XDG_DATA_HOME/lies/library/collections/<name>/`; they are canonical
-source docs, not wikis, and carry no per-collection yaml-declared
-tags. The addressable tag set is the set of library-collection
-directory names — `+airflow` matches the airflow library collection,
-`+provider` matches nothing because no library collection is named
-`provider`. Wikis do not own collections; a wiki's local yaml
-configs are legacy and not consulted for tag resolution. A
-`+c:opencode` filter resolves from any wiki because the opencode
-collection lives in the library.
-
-The MCP `lib_ask` tool accepts `tag_expr` and `exclude_tags` kwargs
-(both lists of atoms per the F15 NOT grammar; no size cap). The
-underlying `SynthesizeEnvelope.searched_scope` (mirroring the
-`search` tool's `searched_scope`) reports the resolved
-library-collection set; with no filter, it reports every library
-collection.
-
-When the active wiki's `tag_expr` references a collection the
-library does not declare, the error surfaces the library's actual
-collection list:
-
-```
-unknown tag: 'opencode'
-the library's collections: example_a, example_b, example_c
-```
-
-When the library has not been initialized, the error names the gap
-so the operator knows to initialize the library before filtering:
-
-```
-unknown tag: 'opencode'
-the library is not initialized; collections live in the library, not in wikis.
-```
-
-When the library is initialized but has zero collections (empty
-`collections_root`), the error tells the operator to ingest first:
-
-```
-unknown tag: 'opencode'
-the library has no collections; ingest something first (see `lies ingest --help`) before querying with tag filters.
-```
-
-Notes on the CLI parser: Typer is configured with
-`ignore_unknown_options=True` so the leading `+tag...` token chain
-reaches `parse_query_argv`. The trade-off is that an unknown flag
-(e.g. a typo like `--tagge` instead of `--tag`) is not rejected at the
-Typer layer — it lands in the question text verbatim. Use
-`--tag-expr` / `--exclude-tag` for an explicit, Typer-validated form.
+**The library is the source of truth for collections.** Collections live as
+directories under `$XDG_DATA_HOME/lies/library/collections/<name>/`; wikis
+do not own collections.
 
 ### Qualifier prefixes (`t:` / `c:`)
 
-Both prefixes are accepted but currently collapse to the same
-answer: only the library-collection directory name is addressable, so
-`+t:airflow` and `+c:airflow` both match only the airflow collection.
+The two prefixes select different things.
 
-- `t:foo` (or no prefix): match the library collection named `foo`.
-- `c:foo`: match the library collection named `foo` (strict name).
+- **`c:foo`** — the library collection *named* `foo`, and nothing else. A
+  tag that happens to read `foo` matches nothing here.
+- **`t:foo`** — every collection carrying the tag `foo`, plus any collection
+  *named* `foo`: a collection's own name is implicitly one of the tags that
+  match it. A bare atom `foo` means the same thing as `t:foo`.
+- `|` unions the two sides' collection sets, `&` intersects them.
 
-The prefix survives the parser so future tag metadata (per-collection
-frontmatter, etc.) can reintroduce the `t:` / `c:` distinction
-without a grammar change. Both include and exclude atoms accept the
-prefixes; the same prefixes work in `lib_ask(tag_expr=...,
-exclude_tags=...)`.
+So `t:mcp` matches the `fastmcp` collection through its `mcp` tag — no
+collection is named `mcp`, so `c:mcp` matches nothing. And `c:opencode`
+matches the `opencode` collection even though nothing tags it `opencode`.
 
-### Output formats
+An atom in neither vocabulary is reported in `unknown_tags` with an empty
+`searched_scope`; the scope is refused, never widened to the whole library.
 
-`lies query` accepts `--format=auto|md|table|marp|chart` (default `auto`). The synthesizer picks the format at composition time based on the answer content; explicit values force re-synthesis with a constrained prompt if the auto-route differs.
-
-- **`md`** (default fallback): plain markdown body.
-- **`table`**: GFM pipe table with header + separator + data rows.
-- **`marp`**: Marp-flavored markdown with `marp: true` frontmatter + slide breaks. When the `marp` CLI is on `$PATH`, the body is rendered to HTML at `${XDG_CACHE_HOME:-~/.cache}/lies/query-<timestamp>.html`. When `marp` is not installed, the body is written to a `.md` file and the path is printed with a render hint.
-- **`chart`**: a single ```` ```mermaid ```` fence (one of `flowchart`, `sequenceDiagram`, or `classDiagram`); the renderer extracts the longest block and emits it unchanged. Validator-bypass: pass-through with a stderr warning when the synth produces no mermaid block.
-
-The format is also exposed on the MCP `lib_ask` response via the `format` field (`"md"`, `"table"`, `"marp"`, or `"chart"`). Synthesis pages gain a `render_format` frontmatter field recording the body shape for future curators.
-
-### `lies wiki provenance`
-
-Lists every synthesised page's `derived_from` set, one row per page by default. Reads from the sqlite catalog — read-only; does not modify the wiki.
-
-```bash
-lies wiki provenance                       # TSV (slug, title, type, source_pkg, updated, csv(sources))
-lies wiki provenance --json                # JSON array of objects (matches `lies catalog dump --json`)
-lies wiki provenance --page <slug>         # drill in to one page; always JSON
-lies wiki provenance --page <slug> --json  # explicit JSON
-lies wiki provenance --orphan              # only pages whose derived_from cites a missing slug
-```
-
-Exit codes: `0` on success (including empty result), `2` when `--page <slug>` does not resolve or the slug is invalid. Errors print to stderr; JSON output stays machine-readable on stdout.
-
-## Advanced
-
-### Library collections
-
-Collections are global library artifacts. Each named unit lives at
-`$XDG_DATA_HOME/lies/library/collections/<slug>/` and contains:
-
-- The deterministic scraped content (`<slug>.md` mirrors produced by
-  `lies ingest`).
-- A `config.yaml` holding the source URL, tags, scraper settings, and
-  any builder-specific knobs (`Collection.config`).
-
-No per-wiki collection config exists; any wiki can read any library
-collection on demand. Wikis do not own collections — the library is the
-source of truth for collection metadata.
-
-Management surface (`lies library {list,show,where,new,modify,delete,enrich-tags}`):
-
-- `list` / `show` / `where` — read-only: enumerate, summarize, print
-  the on-disk path of every library collection.
-- `new` — bootstrap a fresh collection config from `--source` (URL or
-  path); does not ingest content (use `lies ingest` for that).
-- `modify` — edit one or more `key=value` pairs (`--set KEY=VALUE`,
-  with dotted keys like `config.<subkey>`) or replace the whole record
-  via `--from-file PATH`. Writes immediately through an atomic
-  tmp+rename envelope.
-- `delete` — remove a collection's `config.yaml` (mirror files are not
-  touched; re-ingest with `--force` to overwrite).
-- `enrich-tags` — print one `lies library modify <slug> --set tags=...`
-  hint per collection whose `tags` field is empty. Dry-run by default;
-  the operator runs the printed commands manually. `--apply` is reserved
-  for a future auto-apply and currently raises.
-
-Inspect anything locally:
-
-```bash
-uv run lies library list
-uv run lies library show htmx
-uv run lies library where htmx
-```
-
-### Migrating from per-wiki configs
-
-LIES 0.28.0 moves collection configs out of per-wiki YAMLs and into the
-library. The migration is a one-shot, atomic-per-collection rename:
-
-```bash
-# Preview the moves (no writes):
-uv run lies migrate-collection-configs --dry-run
-
-# Apply the relocation:
-uv run lies migrate-collection-configs --apply
-```
-
-`--apply` walks every wiki under `$XDG_CONFIG_HOME/lies/`, relocates
-each `<wiki>/collections/<slug>.yaml` into the library at
-`$XDG_DATA_HOME/lies/library/collections/<slug>/config.yaml`, and
-deletes the source YAML on success. Each `save_config` is atomic per
-slug via tmp+rename; the full plan is not atomic — a non-collision
-failure in the middle leaves partial state (some library configs
-written, all source YAMLs still on disk). The pre-flight check
-surfaces two abort conditions before any write: duplicate slugs
-across wikis, and library-side collisions (a partial-state re-run
-where some library configs already exist). Pass `--force` to
-overwrite the colliding library configs. A wiki without any per-wiki
-collection YAMLs is a no-op success.
-
-**Upgrading:** run `uv tool upgrade lies` to 0.28.0 first, then run
-the migration above for each install before invoking any
-`lies library` command — fresh installs on 0.28.0+ have no per-wiki
-YAMLs and need no migration.
-
-### Manual authoring (advanced)
-
-The bootstrap path covers the common case (URL → bare YAML → sync). For
-non-URL corpora or hand-tuned scrapers, write the library YAML
-directly:
-
-```bash
-$EDITOR "$XDG_DATA_HOME/lies/library/collections/<name>/config.yaml"
-uv run lies sync <name>
-```
-
-For bespoke scrapers outside the repo, set `scraper_cmd: module:attr`
-referencing a `BaseScraper` subclass on `PYTHONPATH`. The `lies sync`
-pipeline honors `scraper_cmd` end-to-end: the `ScraperFetcher` loads
-the bespoke scraper via the same `module:attr` / `path.py:attr`
-resolver the wiki side uses. A bespoke-loader failure propagates —
-the fetcher never silently falls back to `pick_scraper` on
-prefix/suffix heuristics, so misconfigured scrapers surface
-immediately rather than ingesting nothing.
-
-### Liquid sources
-
-`source_format=liquid` enables per-file Liquid template conversion.
-LIES reads `source.liquid`, optionally renders it via a Python callable
-referenced from `Collection.config["render_cmd"]`, then converts the
-HTML to Markdown via pandoc. `lies sync` routes `liquid` through the
-`REGISTRY`-registered `LiquidBuilder` rather than the wiki-side
-`normalize.py` `UnknownFormatError("liquid parsing not yet supported")`
-fallback, so a Liquid collection syncs end-to-end without bespoke
-plumbing.
-
-```yaml
-# $XDG_DATA_HOME/lies/library/collections/liquid-theme/config.yaml
-name: liquid-theme
-source: ./raw/themes/dawn
-source_format: liquid
-config:
-  render_cmd: my_package.shopify_render:render
-  context:
-    shop:
-      name: "Test Shop"
-```
-
-The `render_cmd` follows the same `module:attr` import path as
-`scraper_cmd`. `importlib` loads it at sync time. The callable signature
-is `(template_bytes: bytes, context: dict) -> bytes` (returns HTML).
-
-If `render_cmd` is omitted, the source file is passed through to
-pandoc unchanged. Liquid tags are preserved as HTML in the rendered
-markdown. This is the zero-config path for collections that already
-deliver pre-rendered HTML.
-
-After the first successful sync, the collection's library record is
-registered with the library registry and is addressable from any wiki.
-Inspect with:
-
-```bash
-uv run lies library show htmx
-# name=htmx source=https://... tags=['docs']
-```
-
-Re-runs are idempotent.
-
-### Operator: qmd flock
-
-When two or more lies processes touch qmd concurrently (CI
-parallel `lies ingest`, `lies mcp` server concurrent commits,
-`xargs -P N lies ingest`), the CUDA VMM pool reservation can race
-and OOM-abort the qmd subprocess. lies serializes all `qmd_*` CLI
-helpers through a site-wide flock at
-`${XDG_STATE_HOME:-~/.local/state}/lies/qmd.lock` (override the
-full path via `LIES_QMD_LOCK_PATH`).
-
-Inspect a live holder:
-
-```bash
-lies flock qmd status
-```
-
-Force-reap the qmd flock envelope. Safe to run when no qmd
-subprocess is running; if a live contender re-acquires the
-lock between reap and retry, the command exits 1 with
-`qmd flock still held; live contender survives force-repair`.
-
-```bash
-lies flock qmd force-repair
-```
-
-Two callers share that flock, and they raise the same error on
-different budgets:
-
-- A `qmd_*` CLI helper waits 30 s. `LibraryWriter.commit` re-raises
-  `QmdLockBusy` with the holder PID when that budget is exhausted.
-- A daemon `query` queues behind the same lock for 120 s (override with
-  `LIES_QMD_QUERY_LOCK_WAIT`). On exhaustion it raises `QmdLockBusy`
-  too, carrying the lock path, the holder PID, the elapsed wait and the
-  budget.
-
-In both cases wait and retry rather than recycling the daemon: nothing
-was dispatched, so there is no daemon state to recycle and no `mcp.log`
-line to read. Inspect a live holder with `lies flock qmd status` first.
+`lib_ask` accepts the same atoms via `tag_expr` / `exclude_tags`.
 
 ## Configuration
 
 Environment variables:
 
-- `LIES_WIKI_NAME` — wiki name (default: `default`); resolved under
-  `$XDG_DATA_HOME/lies/<name>/`
-- `LIES_LANG` — wiki language; resolves to `en` when unset. Read before any per-wiki `lies.toml`.
-- `LIES_LOG_LEVEL` — stdlib log level when logfire is inactive (default: `INFO`)
-- `LOGFIRE_TOKEN` — if set, logfire is configured for observability and
-  `pydantic-ai` is instrumented
-- `LIES_QMD_TRANSPORT` — how the agent reaches qmd: `http` (default, uses
-  the qmd daemon) or `stdio` (spawns a `qmd` process per agent)
+- `LIES_WIKI_NAME` — wiki name (default: `default`)
+- `LIES_LANG` — wiki language (default: `en`)
+- `LIES_LOG_LEVEL` — log level when logfire is inactive (default: `INFO`)
+- `LOGFIRE_TOKEN` — enables logfire + `pydantic-ai` instrumentation
+- `LIES_QMD_TRANSPORT` — `http` (default, uses the qmd daemon) or `stdio`
+  (a `qmd` process per agent)
 - `LIES_QMD_URL` — qmd daemon URL (default: `http://localhost:9000/mcp`).
-  The port is derived from this value, so `lies qmd status`, `lies qmd up`,
-  and the access seam always address the same daemon.
-  The host is the name `localhost` because that is what qmd binds
-  (`listen(port, "localhost")`), so LIES follows the family the host
-  resolves it to instead of assuming IPv4.
-- `LIES_QMD_LOCK_PATH` — overrides the default
-  `${XDG_STATE_HOME:-~/.local/state}/lies/qmd.lock` lock path; useful for
-  sandboxing or per-wiki isolation
-- `LIES_QMD_QUERY_LOCK_WAIT` — wait budget in seconds for the daemon query
-  path's flock wait (default: `120`). Anything that is not a positive
-  finite number falls back to the default. The `qmd_*` CLI helpers keep
-  their own 30 s budget and are not affected.
-- `LIES_XDG_DATA_HOME` — overrides `$XDG_DATA_HOME` for LIES
-- `LIES_XDG_CONFIG_HOME` — overrides `$XDG_CONFIG_HOME` for LIES
-- `LIES_XDG_RUNTIME_DIR` — overrides `$XDG_RUNTIME_DIR` for LIES
-- `LIES_XDG_STATE_HOME` — overrides `$XDG_STATE_HOME` for LIES
-- `LIES_XDG_CACHE_HOME` — overrides `$XDG_CACHE_HOME` for LIES
-- `LIES_ORCHESTRATOR_MODEL`, `LIES_SOURCE_READER_MODEL`, `LIES_PAGE_WRITER_MODEL`, `LIES_INDEXER_MODEL`, `LIES_LINTER_MODEL`, `LIES_QUERY_SYNTHESIZER_MODEL`, `LIES_ENRICHER_MODEL`, `LIES_REPAIR_MODEL` — per-agent model override. Non-empty value beats `providers.toml`.
+  The port is derived from this value, so every qmd call site addresses the
+  same daemon. The host is the name `localhost` because that is what qmd
+  binds, so LIES follows whatever address family the host resolves it to.
+- `LIES_QMD_LOCK_PATH` — override the qmd flock path (sandboxing)
+- `LIES_QMD_QUERY_LOCK_WAIT` — query-gate wait budget in seconds
+  (default: `120`)
+- `LIES_XDG_DATA_HOME` / `_CONFIG_HOME` / `_RUNTIME_DIR` / `_STATE_HOME` /
+  `_CACHE_HOME` — override the XDG roots for LIES
+- `LIES_*_MODEL` (per-agent, e.g. `LIES_ORCHESTRATOR_MODEL`) — override a
+  model's selection; a non-empty value beats `providers.toml`.
 
-Most subcommands accept `--name` to override the wiki name for one
-invocation. The bare `lies` REPL (no subcommand) reads the wiki name
-from `$LIES_WIKI_NAME` only; set the env var to switch wikis in the REPL.
-`lies config` prints the active model and wiki name.
-
-### Bootstrapping providers
-
-On a fresh install with no `providers.toml`, run the wizard:
-
-```bash
-uv run lies providers init
-```
-
-The wizard walks three steps — provider catalog → default model → per-agent assignment — and writes `<XDG_CONFIG_HOME>/lies/providers.toml` via atomic rename. At least one provider is required to write the file; the catalog step re-prompts on a blank-name exit with an empty catalog. Back-out is `^C` only. Subsequent edits:
-
-```bash
-uv run lies providers add <name> --type anthropic_compatible \
-    --api-key-env MINIMAX_API_KEY \
-    --base-url https://api.minimax.io/anthropic
-
-uv run lies providers assign source_reader minimax:MiniMax-M3
-uv run lies providers set-default anthropic:claude-opus-4-7
-uv run lies providers unassign linter
-uv run lies providers check
-```
-
-Companion commands refuse if the file is missing; the CLI suggests
-`lies providers init` first.
-
-### Provider and model configuration
-
-LIES reads `$XDG_CONFIG_HOME/lies/providers.toml` at orchestrator construction. The file declares one or more providers and assigns a model to each agent:
-
-```toml
-[providers.anthropic]
-type = "anthropic"
-api_key_env = "ANTHROPIC_API_KEY"
-
-[providers.minimax]
-type = "openai_compatible"
-base_url = "https://api.minimax.io/v1"
-api_key_env = "MINIMAX_API_KEY"
-
-default_model = "anthropic:claude-opus-4-7"
-
-[agents]
-orchestrator = "anthropic:claude-opus-4-7"
-source_reader = "minimax:MiniMax-M3"
-# ... one entry per agent in AGENT_ROSTER.
-```
-
-Three provider types are accepted:
-
-- `type = "anthropic"` resolves through pydantic-ai's built-in provider.
-- `type = "anthropic_compatible"` constructs an `AnthropicModel` directly with a custom `AsyncAnthropic(base_url=..., api_key=...)`. Requires `base_url`.
-- `type = "openai_compatible"` constructs an `OpenAIChatModel` with a custom `AsyncOpenAI(base_url=..., api_key=...)`. Requires `base_url`. Use this for the `https://api.minimax.io/v1` endpoint; the corresponding source_reader / page_writer / etc. agents should be wrapped in `pydantic_ai.output.PromptedOutput` because `MiniMax-M3` ignores `tool_choice` and `response_format=json_schema` on both endpoints.
-
-`lies config` prints every agent and its resolved model. Missing `providers.toml` is non-fatal — every agent falls back to `default_model` and a warning names the expected path.
+Most subcommands accept `--name` to override the wiki for one invocation.
+`lies config` prints the active model and wiki.
 
 ## Development
 
-```bash
-make init
-make check
-make test
-```
-
-`make check` runs ruff, ty, and ruff format (in that order); the
-same checks fire on every commit via `.pre-commit-config.yaml`.
-The pre-commit chain wraps `make unit-test`, so a commit that lands
-in the repo has already passed the local gate.
-
-`make unit-test` enforces the **0.15s per-test hard limit**: any
-non-slow-marked test whose call phase exceeds 0.15s fails the run
-with a printed five-tier remediation rubric (delete / move to
-integration / mock / compress / mark slow). The hook lives in
-`tests/unit/conftest.py` (`pytest_terminal_summary`); slow-marked
-tests are exempt (they only run with `--runslow`). To profile
-slow tests, run `make time-unit-tests` (which passes `--runslow`),
-or `uv run pytest tests/unit/ --runslow --durations=0`.
-
-`make lint-supyrliminal` runs `flake8 --select=SL,PYD`; the same
-check fires on every commit via `.pre-commit-config.yaml` and in CI.
-Supyrliminal is required — commits fail if a new SL/PYD finding
-lands. The pre-existing 12 SL101 findings were resolved in
-[#65](https://github.com/MistressFilth/lies/pull/65); the hook now
-enforces zero findings.
-
-### Test timing
-
-`make time-unit-tests` runs the unit suite with
-`--durations=0 --durations-min=0 -vv --tb=short --no-header` and
-prints every test's wall-clock time, slowest first. Pass `--runslow`
-to include the `@pytest.mark.slow` tests (CLI status rendering,
-subprocess-bound daemon reap); without it, the slow tests are
-skipped. `make time-features-tests` does the same for the
-integration suite and short-circuits unless `INTEGRATION=1` is set
-in the environment.
-
-Integration tests are gated by `INTEGRATION=1` via a single
-collection hook in `tests/integration/conftest.py`. Default
-`make test` and `make check` skip them; CI runs them with
-`INTEGRATION=1 uv run pytest tests/integration/`.
-
-## Architecture
-
-The agent maintains the wiki invisibly during normal interaction. See [Invisible memory](#invisible-memory) for the contract.
-
-A top-level `Orchestrator` (`src/lies/orchestrator.py`) dispatches user commands
-to four sub-agents via harness's `SubAgents` and `DynamicWorkflow` capabilities:
-
-A `FastMCP` server (`src/lies/mcp/server.py`) exposes the orchestrator's
-operations to MCP-capable hosts (Claude Code, Cursor, etc.) over stdio.
-See "Using LIES from Claude Code" above for the registration command.
-
-- `source-reader` — read a raw source and return a structured extraction
-  (claims, entities, concepts, comparisons, summary).
-- `page-writer` — create or update wiki pages from extracted material; returns
-  `PageDiff` operations; never touches `index.md` or `log.md`.
-- `linter` — walk the wiki and produce a structured `LintReport`
-  (contradictions, stale, orphans, missing pages, missing xrefs, data gaps).
-- `librarian` (F18) — in-process pydantic-ai subagent that classifies a
-  user question, issues qmd searches, reads the top pages, and returns
-  a curated `PageExcerpt` bundle to the synthesizer. Runs the
-  4-step contract (classify → search → read → return) ported from
-  `ask/skills/ask/librarian-prompt.md`.
-- `query-synthesizer` — synthesize a cited answer from the librarian's
-  page bundle; surfaces disagreements and notes what the wiki does NOT
-  know. Emits inline citations of the form `[[page-slug]]: "verbatim
-  text"` per claim (F19).
-
-`wiki/index.md` (the catalog) is now maintained deterministically by the
-sqlite-backed catalog port (`.lies/catalog.db` in the wiki dir), not by a
-sub-agent. See [Storage layout](#storage-layout).
-
-The orchestrator owns cross-cutting `pydantic-ai-harness` capabilities:
-
-- `CodeMode` — atomic multi-file writes during ingest.
-- `Memory` — cross-session continuity: schema state, last-ingested source, open
-  lint findings.
-- `Planning` — break "ingest touches 10–15 pages" into an ordered plan.
-- `DynamicWorkflow` — parallel cross-reference updates during ingest.
-- File system — read/write the wiki and raw sources, with traversal guards.
-- Shell — `qmd` and `git` allowlist.
-
-`qmd` provides hybrid search (BM25 + vector + rerank) via MCP (primary) and CLI
-shell-out (for `qmd status` diagnostics).
-
-### Storage layout
-
-The wiki is a git repository on disk, rooted under
-`$XDG_DATA_HOME/lies/<name>/` by default:
-
-```
-$XDG_DATA_HOME/lies/<name>/     # wiki content root (the git repo)
-├── .gitignore                  # seeded by `lies init`; ignores `.lies/`
-├── .lies/                      # gitignored; wiki-root derived state
-│   └── memory_plans.jsonl      # invisible-write receipt sidecar
-├── raw/                        # immutable sources (the human curates these)
-└── wiki/                       # LLM-owned markdown
-    ├── .lies/                  # gitignored; wiki-dir derived state
-    │   ├── catalog.db          # sqlite wiki catalog (source-of-truth)
-    │   ├── catalog.db-wal      # write-ahead log
-    │   └── catalog.db-shm      # shared memory file
-    ├── index.md                # read-only title-only catalog derivative
-    ├── log.md                  # append-only log (wiki-wide)
-    ├── overview.md
-    └── <collection>/           # per-collection subdir; qmd is registered here
-        └── <page-type>/<name>.md
-
-$XDG_CONFIG_HOME/lies/<name>/   # per-wiki configuration
-└── schema.md                   # per-wiki schema override (optional)
-
-$XDG_RUNTIME_DIR/lies/<name>/   # transient runtime state (locks, pidfile)
-
-$XDG_STATE_HOME/lies/<name>/    # logs/scratch/poison
-└── mcp.log
-
-$XDG_CACHE_HOME/lies/<name>/    # hashes/manifests
-```
-
-#### Library
-
-The library is the global corpus of deterministic source mirrors —
-a sibling of every wiki root under `$XDG_DATA_HOME/lies/`. Every
-ingest across every wiki writes here, so the same ingested source
-can feed multiple wikis without a re-fetch:
-
-```
-$XDG_DATA_HOME/lies/library/        # global corpus (shared across wikis)
-├── .lies/                          # gitignored; library-root derived state
-│   ├── catalog.db                  # sqlite library catalog (source-of-truth)
-│   ├── catalog.db-wal              # write-ahead log
-│   └── catalog.db-shm              # shared memory file
-├── log.md                          # append-only library log
-├── poison/                         # quarantined failures
-└── collections/                    # one subdir per collection
-    └── <collection>/               # deterministic mirror + frontmatter
-        ├── raw/                    # raw source bytes (optional)
-        └── .lies/manifest.json     # per-collection manifest
-```
-
-The library catalog is a separate sqlite database from the wiki's
-`.lies/catalog.db`: the wiki catalog indexes the agent's wiki pages;
-the library catalog indexes the ingested source mirrors.
-`section='library'` covers active mirrors; `section='library-migrated'`
-quarantines anything `lies migrate ingest-to-library` could not move.
-Library mirrors are immutable once written — re-ingest with `--force`
-to overwrite.
-
-The catalog is a small sqlite database at `.lies/catalog.db` **inside the
-wiki dir** (WAL journal mode, `busy_timeout=5000`), accompanied by its
-`-wal` and `-shm` siblings. Note that this is a different `.lies/` from
-the wiki-root one holding `memory_plans.jsonl`. All three catalog files
-are gitignored — `lies init` seeds a `.gitignore` whose `.lies/` rule
-covers every `.lies/` directory in the repo. `wiki/index.md` is a
-read-only markdown derivative of that database, rendered on demand by
-`lies catalog render`.
-
-The catalog is kept in lockstep with the wiki by per-operation upserts
-inside `WikiMemoryService.apply_plan` and a bulk upsert in the etl WRITE
-stage, so it never needs a rebuild during normal operation. Reconcile
-after any out-of-band file edits: `lies catalog reconcile --dry-run` to
-preview, then drop the flag to apply.
-
-CLI commands (`src/lies/cli/`):
-
-- `lies init <name>` — initialize a new wiki by name (creates all five
-  role-routed XDG directories, copies default schema, `git init`, initial commit).
-- `lies migrate-xdg <legacy-path> --name <name>` — one-shot bridge from
-  legacy `<path>/.lies/` to XDG role-routed directories.
-- `lies ingest --source <PATH|URL> [--collection NAME] [--slug <slug>] [--title <title>] [--force] [--dry-run] [--exclude-stem <name> ...] [--exclude-dir <name> ...]` — deterministic single-source ingest into the library. No LLM round-trip; the 5-step pipeline (fetch → ETL → filter → mirror → catalog) writes a deterministic frontmatter mirror and atomic-commits one catalog upsert. `--collection` defaults to `--slug-prefix` or `default`; `--force` overwrites an existing mirror; `--dry-run` prints the plan without writing.
-- `lies ingest --batch <DIR> --slug-prefix <name> [--force] [--dry-run] [--exclude-stem <name> ...] [--exclude-dir <name> ...]` — directory walk into one collection. Same pipeline as `--source` but iterates every eligible file under `<DIR>`.
-- `lies sync [<collection>] [--source URL] [--wizard]` — sync one collection into the library, or every collection in the wiki when no positional is given. Pass `--source` to bootstrap a missing YAML (single-collection mode only); `--wizard` routes the bootstrap through `collection_author_agent`. Honors `Collection.scraper_cmd` (bespoke scrapers via `module:attr` / `path.py:attr`) and routes REGISTRY-registered source formats (sphinx / liquid / bespoke) through their builders before falling back to `format_dispatch`. Exits non-zero when the batch reports any `errors`.
-- `lies query [+tag[&|tag]...] [-tag] <question> [--collection NAME] [--no-file] [--force-file] [--tag-expr EXPR] [--exclude-tag TAG]`
-  — ask a question of the wiki; answers are LLM-synthesized with
-  `citations: list[Citation]` over qmd-retrieved pages (each
-  `Citation` carries a `source: "library" | "wiki"` tag — library
-  collections are the primary source of truth, wiki content is
-  supplementary; the synthesis prompt instructs the LLM that
-  library wins on conflict), falling back to the previous
-  extractive output when no model is available. A leading `+tag`
-  restricts the search to collections carrying that tag (atoms joined
-  by `&` / `|`, with `&` binding tighter, e.g.
-  `+airflow&provider|pyspark`); a following `-tag` excludes one tag.
-  A collection's own name is always an addressable tag. Everything
-  after the filter is the question, so bare `lies query what is X?`
-  keeps working unchanged. `--tag-expr` (include body, no leading `+`)
-  and `--exclude-tag` express the same filter without the prefix
-  syntax and mirror the MCP tool's argument shape; when either is
-  given the positional tokens are the question verbatim. A grammar
-  error or a tag outside the registry exits 2. When the synthesizer
-  marks an answer `should_file`, the answer is durably filed under
-  `wiki/<collection>/synthesis/<file>`; `--collection NAME` selects
-  the target subdir (required to write), `--no-file` skips the loop,
-  `--force-file` writes regardless of the agent's verdict. Success
-  prints a `(synthesis: durably filed - <op>: <path>)` receipt;
-  failure prints `(synthesis: error — <reason>)`.
-- `lies page write` — write one page directly to the wiki (F39).
-- `lies lint [--fix]` — health-check the wiki (`--fix` applies the repair plan for safe_to_fix findings). Findings span six categories; LLM-backed categories are skipped with a `Sources` line when no model key is configured.
-- `lies mcp` / `lies mcp start` — run the MCP server on stdio.
-- `lies mcp up` / `down` / `status` — manage the detached http MCP daemon.
-- `lies qmd status` / `up` / `down` / `recycle` — manage the shared qmd
-  daemon (`recycle` and `down` preserve the daemon's `mcp.log` to
-  `mcp.log.<timestamp>` first, keeping 5 generations, because qmd
-  truncates that file on every start and a preserved copy is the only
-  record of what a daemon did before it was replaced. If the daemon
-  dies unexpectedly, look in `~/.cache/qmd/` for the preserved
-  generations;
-  `status` prints a JSON snapshot of the daemon plus an
-  `index` block — orphan vector rows, active-vs-total document split,
-  count of active documents lacking any embedding row, and any
-  registered collection whose path is missing on disk. `null` when
-  the index is absent; `{"error": …}` when it is present but cannot
-  be read — a WAL database needing recovery, which `null` used to
-  report as "no index" and which is a one-command fix.
-  `up` is idempotent; `down` is best-effort;
-  `recycle` restarts and waits for liveness). Mirrors ask's daemon
-  operator surface so an operator fluent in ask's commands can apply
-  them to LIES unchanged. `lies mcp down` still does not stop qmd —
-  that daemon is machine-global and stopping it would break sessions
-  LIES knows nothing about. Use `lies qmd down` (or `qmd mcp stop`)
-  explicitly when you want it down.
-- `lies status` — show the library catalog count + migrated tally, qmd
-  status, wiki catalog size, recent invisible writes, and the last few
-  log entries (`--memory-limit N` to skip or limit the writes section).
-- `lies catalog {status, dump, reconcile, rebuild, render}` — manage the
-  sqlite wiki catalog (`.lies/catalog.db` inside the wiki dir). `status`
-  prints the row count and schema version; `dump` lists rows (`--json`,
-  `--source-pkg`, `--type` filters); `reconcile` syncs the catalog with
-  files on disk (`--dry-run` to preview); `rebuild` forces a full
-  backfill from disk; `render` writes the title-only `wiki/index.md`
-  markdown derivative (`--out FILE`, default stdout). Mirrors the design
-  described in superpowers/specs/2026-09-04-f4b-f16-catalog-port-design.md.
-  See
-  [Storage layout](#storage-layout).
-- `lies memory [--limit|--pages|--ops|--since|--json]` — show recent
-  MemoryPlan applications from the JSONL sidecar.
-- `lies memory reconcile` — rebuild the sidecar from `git log --grep='^memory:'`.
-- `lies memory truncate --keep N [--force]` — cap the sidecar to its
-  last N rows.
-- `lies config` — print the active model and wiki name.
-- `lies version` — print the LIES version.
-- `lies` (no subcommand) — enter the REPL (`/ingest`, `/query`, `/lint`,
-  `/status`, `/commit`, `/exit`).
-
-## Destructive reindex flags
-
-`lies reindex` accepts four flags restored from PR #17:
-
-- `--cleanup` — drop orphan qmd collections; vacuum FTS5 db. **Destructive**.
-- `--all` — full rebuild incl cleanup. **Destructive**.
-- `--force` — drop qmd's cache and rebuild index from scratch. Non-destructive.
-- `--embed` — re-embed stale chunks. Non-destructive.
-
-Destructive flags prompt for confirmation:
-
-```
-$ lies reindex --cleanup
-Confirm destructive reindex (cleanup+drop orphans)? [y/N]: y
-reconciled=False indexed=True embedded=False cleaned=True errors=[]
-```
-
-On a non-TTY (CI, scripts, piped output), the prompt refuses and exits 2 unless `--yes` is passed:
-
-```
-$ lies reindex --cleanup | tee log.txt
-error: Confirm destructive reindex (cleanup+drop orphans)? [y/N] requires --yes when stdout is not a TTY
-```
-
-The MCP `reindex` tool mirrors this with `destructiveHint=True` and uses `ctx.elicit` for the confirmation.
-
-## MCP server orientation
-
-The LIES MCP server ships an orientation payload at every
-`initialize` handshake. As of v0.41 the server exposes seven slash
-prompts (`ask`, `collections`, `ingest`, `lint`, `reindex`, `sync`,
-`ground`) that template routed tool calls. Hosts bind prompt names
-under their server prefix (e.g. `/lies:ask`).
-
-- `instructions=` field: path/env facts, v0.40 tool inventory,
-  v0.41 prompt inventory, resource list. The agent sees this on
-  attach regardless of cwd.
-
-The payload lives at `src/lies/mcp/instructions.md`. A pre-commit
-hook (`tools/check_lies_commands.py`) blocks commits that
-introduce unresolved `lies <cmd>` references.
-
-## Parsing and Ingestion
-
-LIES ingests documentation sources through a deterministic 5-step
-pipeline. The pipeline is purely mechanical — no LLM call on the
-ingest path:
-
-1. **FETCH** — pull bytes from a URL/path via `ScraperFetcher`
-   (honors `Collection.scraper_cmd` for bespoke loaders;
-   routes REGISTRY-registered source formats — sphinx, liquid,
-   bespoke — through their builders before falling back to
-   `format_dispatch`).
-2. **ETL** — format dispatch (HTML, PDF, Sphinx, Liquid, etc.) →
-   per-collection builders → normalized markdown.
-3. **FILTER** — drop docs excluded by `--exclude-stem` /
-   `--exclude-dir`; reject empty bodies.
-4. **MIRROR** — write one deterministic frontmatter mirror per
-   doc at `<library>/collections/<collection>/<slug>.md` (or
-   reject on slug collision unless `--force`).
-5. **CATALOG + COMMIT** — upsert one row per mirror into
-   `<library>/.lies/catalog.db` (sqlite WAL,
-   `busy_timeout=5000`) inside the `LibraryWriter` atomic-commit
-   envelope, then refresh qmd against the library path via a
-   non-fatal post-commit hook.
-
-Ingested sources live in the **library**
-(`$XDG_DATA_HOME/lies/library/collections/<collection>/`), not
-under `wiki/`. The library is the deterministic, immutable mirror
-of curated sources; the wiki is the agent's downstream markdown
-(F39 page-author + LLM-driven `MemoryEnricher` / F3 file-back).
-See [Storage layout](#storage-layout) for the full directory
-boundary.
-
-The wiki catalog (`wiki/.lies/catalog.db`) is unchanged — it still
-indexes the agent's wiki pages, not the library mirrors.
-`wiki/index.md` is a read-only title-only derivative of that
-catalog, emitted on demand by `lies catalog render`.
-
-Commands:
-
-- `lies ingest --source <PATH|URL> [--collection NAME] [--slug <slug>] [--title <title>] [--force] [--dry-run] [--exclude-stem ...] [--exclude-dir ...]` — deterministic single-source ingest into the library. No LLM round-trip; the 5-step pipeline writes a deterministic frontmatter mirror and atomic-commits one catalog upsert. `--collection` defaults to `--slug-prefix` or `default`; `--force` overwrites an existing mirror; `--dry-run` prints the plan without writing.
-- `lies ingest --batch <DIR> --slug-prefix <name> [--force] [--dry-run] [--exclude-stem ...] [--exclude-dir ...]` — directory walk into one collection. Same pipeline as `--source` but iterates every eligible file under `<DIR>`.
-- `lies sync <collection> [--source URL] [--wizard]` — sync one collection into the library, or every collection in the wiki when no positional is given. Pass `--source` to bootstrap a missing YAML (single-collection mode only); `--wizard` routes the bootstrap through `collection_author_agent`. Honors `Collection.scraper_cmd` (bespoke scrapers via `module:attr` / `path.py:attr`) and routes REGISTRY-registered source formats (sphinx / liquid / bespoke) through their builders before falling back to `format_dispatch`. Exits non-zero when the batch reports any `errors`.
-- `lies migrate ingest-to-library [--dry-run|--apply]` — move wiki-resident ingests into the library. Backup duplicates at `<wiki>/.lies/migration-backup/<date>/`. `--dry-run` previews the moves; `--apply` performs one atomic commit per collection (cross-process flock, snapshot/restore on failure) and registers each library-side collection with qmd.
-- `lies reindex --reconcile` — sync each collection.
-- `lies library {list,show,where,new,modify,delete,enrich-tags}` — manage
-  library collection configs (one directory per collection at
-  `$XDG_DATA_HOME/lies/library/collections/<slug>/`, with the config in
-  `config.yaml`). `list` / `show` / `where` are read-only; `new` /
-  `modify` / `delete` mutate (modify writes immediately; see `--help`);
-  `enrich-tags` prints one `lies library modify <slug> --set tags=<comma-separated>`
-  hint per collection whose `tags` field is empty. Dry-run by default;
-  the operator runs the printed commands manually. `--apply` is
-  reserved for a future auto-apply and currently raises.
-- `lies migrate-collection-configs [--dry-run|--apply]` — one-shot
-  relocation of legacy per-wiki collection YAMLs
-  (`$XDG_CONFIG_HOME/lies/<wiki>/collections/<slug>.yaml`) into the
-  library (`$XDG_DATA_HOME/lies/library/collections/<slug>/config.yaml`).
-  `--dry-run` previews the move list; `--apply` performs one atomic
-  rename per collection and updates any wiki-side references. Run this
-  after upgrading to 0.28.0 to lift your existing wikis onto the
-  library-resident layout. See "Migrating from per-wiki configs"
-  below.
+`make check` runs lint + typecheck + format + unit tests; `make test`
+adds the integration suite. The **CI gate** is
+`INTEGRATION=1 CI=true pytest tests/ --runslow` — a plain `pytest` reports
+integration as skipped and hides the entire slow surface, so a green local
+run is not evidence. See `AGENTS.md` for the agent-facing contracts and
+known flakes.
 
 ## License
 
-[MIT](LICENSE).
+MIT — see `LICENSE`.
 
 ## Project links
 
-- [Changelog](CHANGELOG.md)
-- [Agent instructions](AGENTS.md)
-- [License](LICENSE)
+- Issues: https://github.com/MistressFilth/lies/issues
+- Changelog: `CHANGELOG.md`
+- Agent contracts and known flakes: `AGENTS.md`
