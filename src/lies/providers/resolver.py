@@ -21,8 +21,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pydantic_ai.models import Model
-
 from lies.providers.config import (
     ProviderSpec,
     ProvidersConfig,
@@ -34,6 +32,10 @@ from lies.providers.errors import ProviderConfigError
 if TYPE_CHECKING:
     from anthropic import AsyncAnthropic
     from openai import AsyncOpenAI
+
+    # Annotation-only. Importing it for real costs ~930ms, and every
+    # importer of ``lies.providers`` paid that.
+    from pydantic_ai.models import Model
 
 
 def _anthropic_client(spec: ProviderSpec) -> "AsyncAnthropic":

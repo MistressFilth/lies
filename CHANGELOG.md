@@ -49,6 +49,28 @@ rule rather than the accident.
 
 ### Changed
 
+- **`lies mcp down` stops qmd's daemon too, with `--no-qmd` to opt out.**
+  It previously stopped only the LIES daemon and left qmd alone, on the
+  grounds that qmd is machine-global and shared with other wikis and tools.
+  That reasoning still holds — which is why the stop is opt-*out* rather
+  than unconditional, mirroring the `--no-qmd` that `lies mcp up` already
+  carried. The two commands are now a symmetric pair: whatever `up` starts,
+  `down` stops, unless you tell it not to.
+
+  The stop goes through `qmd.lifecycle._down`, the same path `lies qmd
+  down` uses, so both commands stop qmd identically. It short-circuits when
+  nothing is listening and there is no pidfile, so a second `down` after qmd
+  is already gone is not an error. A host with no qmd binary reports that
+  rather than raising.
+
+  The port is resolved from `LIES_QMD_URL` by the same
+  `daemon_port_from_url(get_qmd_url())` that `up` threads, so `down` and
+  `up` cannot disagree about which qmd they mean.
+
+  **Stated limit:** this now stops a daemon that other tools on the host
+  share. That is the documented default; `--no-qmd` is how a caller who
+  is not alone on the host avoids it.
+
 - **`LIES_QMD_URL` now defaults to port 9000, and the port is derived
   from it rather than duplicated.** The default was
   `http://localhost:8181/mcp` while a separate `_DEFAULT_PORT = 8181`

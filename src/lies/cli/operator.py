@@ -177,12 +177,20 @@ def down(
         envvar="LIES_WIKI_NAME",
         help="Wiki whose daemon should be stopped (default: $LIES_WIKI_NAME).",
     ),
+    no_qmd: bool = typer.Option(
+        False,
+        "--no-qmd",
+        help="Leave qmd's daemon running, for a host where other tools share it.",
+    ),
 ) -> None:
-    """Stop the MCP daemon tracked for this wiki.
+    """Stop the MCP daemon tracked for this wiki, and qmd's daemon with it.
 
     Only pidfile-tracked daemons are stopped. Stdio servers spawned by an
-    MCP host are never touched, and qmd's daemon is never touched at all:
-    it is machine-global and shared with other wikis and tools.
+    MCP host are never touched.
+
+    qmd's daemon is machine-global and shared with other wikis and tools, so
+    stopping it is opt-out: ``--no-qmd`` leaves it running. The same flag
+    exists on ``up``, which is what makes ``down``/``up`` a symmetric pair.
 
     The LIES daemon is shared too. Stopping one that is serving disconnects
     every MCP client on this host, and their next call fails with nothing in
@@ -213,6 +221,18 @@ def down(
                 "`lies mcp up`.",
                 err=True,
             )
+
+    if no_qmd:
+        return
+    from lies.config import get_qmd_url
+    from lies.qmd import daemon as qmd_daemon
+    from lies.qmd import lifecycle as qmd_lifecycle
+
+    if not qmd_daemon.qmd_installed():
+        typer.echo("qmd is not installed; nothing to stop", err=True)
+        return
+    qmd_lifecycle._down(port=qmd_daemon.daemon_port_from_url(get_qmd_url()))
+    typer.echo(f"stopped qmd daemon on port {qmd_daemon.daemon_port_from_url(get_qmd_url())}")
 
 
 @mcp_app.command(name="status")

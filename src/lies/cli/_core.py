@@ -95,7 +95,7 @@ def config_cmd(
         AGENT_ROSTER,
         ProviderConfigError,
         load_providers_config,
-        resolve_model,
+        resolve_agent_to_provider,
     )
 
     wiki = resolve_wiki(name)
@@ -114,16 +114,17 @@ def config_cmd(
     width = max(len(agent_name) for agent_name in AGENT_ROSTER)
     for agent_name in AGENT_ROSTER:
         try:
-            resolved = resolve_model(agent_name, cfg)
+            _, model_name, spec = resolve_agent_to_provider(agent_name, cfg)
         except ProviderConfigError as exc:
             typer.echo(f"  {agent_name.ljust(width)}  (unresolved: {exc})")
             continue
-        if isinstance(resolved, str):
-            typer.echo(f"  {agent_name.ljust(width)}  {resolved}")
+        if spec.type == "anthropic":
+            typer.echo(f"  {agent_name.ljust(width)}  anthropic:{model_name}")
         else:
-            # Resolved into a Model instance (custom anthropic_compatible
-            # provider); show the TOML string the user wrote -- which is
-            # the model identifier, not the constructed client.
+            # A compat provider would resolve into a constructed Model, which
+            # this command discarded anyway in favour of the TOML string. Ask
+            # the spec instead of building the client: constructing one here
+            # imported the provider SDKs, costing ~1s to print a config file.
             typer.echo(f"  {agent_name.ljust(width)}  {cfg.agents[agent_name]}")
 
 

@@ -487,6 +487,11 @@ call.**
   still accepted and gates nothing. The consequence is reported as
   `StopResult.disconnected` and printed by the CLI on stderr, because
   `stop_daemon` stays silent and the caller owns presentation.
+  `down` also stops **qmd's** daemon, which is machine-global and shared
+  with other wikis and tools — so that stop is opt-out via `--no-qmd`,
+  mirroring `up`'s. It goes through `qmd.lifecycle._down`, the same path
+  `lies qmd down` uses, on the port `daemon_port_from_url` resolves from
+  `get_qmd_url()`, so `up` and `down` cannot disagree.
 - **Three daemon failure modes, three answers.** A *wedge* recycles and
   raises `QmdDaemonWedged` carrying a `mcp.log` tail; no transparent
   retry, because a fresh daemon re-wedges on the same payload.
