@@ -94,6 +94,11 @@ def test_a_command_resolves_with_nothing_cached_in_globals(
     one touches nothing.
     """
     monkeypatch.delitem(qmd_cli.__dict__, "status", raising=False)
+    # ``status_cmd`` reaches the lazily-resolved module, so patch it there:
+    # the default port is 9000 and a real connect would hit a live daemon.
+    from lies.qmd import lifecycle as real_lifecycle
+
+    monkeypatch.setattr(real_lifecycle, "_port_listening", lambda port: False)
     qmd_cli.status_cmd(port=qmd_cli._DEFAULT_PORT)
     assert json.loads(capsys.readouterr().out)["port"] == qmd_cli._DEFAULT_PORT
 

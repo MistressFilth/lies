@@ -785,7 +785,9 @@ Environment variables:
   `pydantic-ai` is instrumented
 - `LIES_QMD_TRANSPORT` — how the agent reaches qmd: `http` (default, uses
   the qmd daemon) or `stdio` (spawns a `qmd` process per agent)
-- `LIES_QMD_URL` — qmd daemon URL (default: `http://localhost:8181/mcp`).
+- `LIES_QMD_URL` — qmd daemon URL (default: `http://localhost:9000/mcp`).
+  The port is derived from this value, so `lies qmd status`, `lies qmd up`,
+  and the access seam always address the same daemon.
   The host is the name `localhost` because that is what qmd binds
   (`listen(port, "localhost")`), so LIES follows the family the host
   resolves it to instead of assuming IPv4.

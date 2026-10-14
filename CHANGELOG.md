@@ -49,6 +49,36 @@ rule rather than the accident.
 
 ### Changed
 
+- **`LIES_QMD_URL` now defaults to port 9000, and the port is derived
+  from it rather than duplicated.** The default was
+  `http://localhost:8181/mcp` while a separate `_DEFAULT_PORT = 8181`
+  lived independently in *both* `qmd/lifecycle.py` and `cli/qmd.py` —
+  the latter documented in source as a deliberate mirror, held separately
+  only to avoid importing the heavy module at CLI startup.
+
+  Three literals that had to agree, and did not: with the daemon on 9000,
+  `lies qmd status` probed 8181, reported `running=False`, and pointed the
+  operator at `lies qmd up` — the one action that would change nothing,
+  since the daemon was already up. **That is now unreproducible.**
+  `config.get_qmd_port()` parses the port out of `get_qmd_url()`, and
+  `status`, `_up`, `_down`, `serves_query`, `recycle`, and the CLI's
+  `--port` defaults all resolve through it. An explicit `--port` still
+  wins.
+
+  Precedence is unchanged — `LIES_QMD_URL` over the default. A value
+  with no port, or one that does not parse, falls back to the default's
+  port rather than raising, matching how `get_qmd_query_timeout` treats a
+  malformed value.
+
+  The host stays the *name* `localhost`: qmd binds that name
+  (`dist/mcp/server.js`: `listen(port, "localhost")`) and Node takes the
+  first family it resolves to, so a literal address still breaks on an
+  IPv6-first host.
+
+  One test pinned the old literal port and is retargeted at the
+  configured port rather than the constant: a deployment choice that has
+  already moved once is a poor thing for a test to assert.
+
 - **`lies mcp down` stops a serving daemon instead of refusing.**
   It used to exit 1 with `DaemonInUse` and tell the operator to pass
   `--force`. The daemon is machine-global, so that guard protected

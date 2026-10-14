@@ -18,7 +18,7 @@ DEFAULT_QMD_TRANSPORT = "http"
 # it to. An IPv6-first ``/etc/hosts`` puts the daemon on ``[::1]``
 # and refuses the IPv4 dial — measured on the CI runner. Naming the
 # host resolves whichever family qmd got.
-DEFAULT_QMD_URL = "http://localhost:8181/mcp"
+DEFAULT_QMD_URL = "http://localhost:9000/mcp"
 DEFAULT_WIKI_NAME = "default"
 # Per-call deadline for a qmd *retrieval* subprocess, read at call
 # time. 60s is ``qmd_query``'s own signature default. Live
@@ -76,3 +76,26 @@ def get_qmd_query_timeout() -> int:
 
 def get_qmd_url() -> str:
     return os.environ.get("LIES_QMD_URL", DEFAULT_QMD_URL)
+
+
+def get_qmd_port() -> int:
+    """The port of the configured qmd daemon, derived from :func:`get_qmd_url`.
+
+    Derived rather than held as its own default so the URL and the port
+    cannot disagree: a second literal is how ``lies qmd status`` came to
+    probe 8181 while the daemon it was asked about ran on 9000.
+
+    A value with no port, or one that does not parse, falls back to the
+    port in :data:`DEFAULT_QMD_URL` rather than raising — the same
+    tolerance :func:`get_qmd_query_timeout` applies to a malformed one.
+    """
+    from urllib.parse import urlsplit
+
+    for url in (get_qmd_url(), DEFAULT_QMD_URL):
+        try:
+            port = urlsplit(url).port
+        except ValueError:
+            continue
+        if port:
+            return port
+    return 9000

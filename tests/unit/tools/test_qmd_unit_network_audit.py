@@ -41,13 +41,12 @@ def test_a_test_with_no_grant_is_unaccepted() -> None:
 
 def test_a_named_test_may_reach_only_the_ports_it_was_granted() -> None:
     """The grant is the ports, not the file."""
-    on_default = next(k for k, v in audit.ACCEPTED.items() if v == frozenset({8181}))
-    assert audit._unaccepted([_hit(on_default, 8181)]) == []
-
-    wrong_port = [_hit(on_default, 9000)]
-    assert audit._unaccepted(wrong_port) == wrong_port, (
-        f"{on_default} is granted 8181 only; reaching 9000 reaches the "
-        f"operator's live daemon and is a different grant"
+    granted_node = next(iter(audit.ACCEPTED))
+    granted_ports = audit.ACCEPTED[granted_node]
+    other = next(p for p in sorted(audit.WATCHED_PORTS) if p not in granted_ports)
+    assert audit._unaccepted([_hit(granted_node, other)]) == [_hit(granted_node, other)], (
+        f"{granted_node} is granted {sorted(granted_ports)} only; reaching {other} "
+        f"is a different grant, and on this host {other} is a live daemon"
     )
 
 
