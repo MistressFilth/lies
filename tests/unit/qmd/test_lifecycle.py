@@ -18,7 +18,6 @@ import pytest
 from lies.qmd import lifecycle
 from lies.qmd.lifecycle import (
     DaemonStatus,
-    _DEFAULT_PORT,
     _HOST,
     _find_qmd,
     _logfile,
@@ -101,6 +100,34 @@ def test_read_pid_returns_none_on_garbage(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert _read_pid() is None
 
 
+# --- default port derives from the configured URL --------------------------------------
+
+
+def test_status_probes_the_port_in_the_configured_url(monkeypatch) -> None:
+    """``status()`` with no port probes ``LIES_QMD_URL``, not a baked-in literal."""
+    # It used to probe a module-level ``_DEFAULT_PORT`` of 8181, so with the
+    # daemon on 9000 it reported ``running=False`` and told the operator to
+    # start a daemon that was already up.
+    import lies.qmd.lifecycle as lc
+
+    monkeypatch.setenv("LIES_QMD_URL", "http://localhost:9100/mcp")
+    seen: list[int] = []
+    monkeypatch.setattr(lc, "_port_listening", lambda port: seen.append(port) or True)
+    lc.status()
+    assert seen == [9100], f"status probed {seen}, expected the URL's port"
+
+
+def test_an_explicit_port_still_wins(monkeypatch) -> None:
+    """A caller's ``port=`` overrides the derived default."""
+    import lies.qmd.lifecycle as lc
+
+    monkeypatch.setenv("LIES_QMD_URL", "http://localhost:9100/mcp")
+    seen: list[int] = []
+    monkeypatch.setattr(lc, "_port_listening", lambda port: seen.append(port) or True)
+    lc.status(port=9300)
+    assert seen == [9300], f"an explicit port was overridden: {seen}"
+
+
 # --- _port_listening --------------------------------------------------------
 
 
@@ -160,6 +187,10 @@ def test_status_returns_not_running_when_pidfile_absent_and_no_listener(
     effect on the real qmd pidfile location.
     """
     monkeypatch.setenv("LIES_XDG_CACHE_HOME", str(tmp_path))
+    # Stub the probe rather than dialling the configured port: with the
+    # default now 9000, a real connect here reaches the operator's LIVE
+    # daemon and the answer depends on whether it happens to be up.
+    monkeypatch.setattr(lifecycle, "_port_listening", lambda port: False)
     s = status()
     assert s.running is False
     assert s.pid is None
@@ -224,11 +255,16 @@ def test_status_reports_running_false_when_listener_but_no_pidfile(
     assert s.pid is None
 
 
-def test_status_url_uses_default_port() -> None:
-    """The default ``status()`` URL points at the default port."""
+def test_status_url_uses_default_port(monkeypatch) -> None:
+    """The default ``status()`` URL points at the configured port."""
+    from lies import config
+
+    # Stubbed for the same reason as the probe above: this asserts the
+    # reported port and URL, and a real connect would reach a live daemon.
+    monkeypatch.setattr(lifecycle, "_port_listening", lambda port: False)
     s = status()
-    assert s.port == _DEFAULT_PORT
-    assert s.url == f"http://{_HOST}:{_DEFAULT_PORT}/mcp"
+    assert s.port == config.get_qmd_port()
+    assert s.url == f"http://{_HOST}:{config.get_qmd_port()}/mcp"
 
 
 def test_status_honors_custom_port() -> None:
@@ -389,7 +425,10 @@ def test_recycle_calls_down_then_up_and_polls(monkeypatch: pytest.MonkeyPatch) -
     unit-test budget.
     """
     calls: list[str] = []
-    expected = DaemonStatus(running=True, pid=42, port=8181, url="http://127.0.0.1:8181/mcp")
+    from lies import config
+
+    port = config.get_qmd_port()
+    expected = DaemonStatus(running=True, pid=42, port=port, url=f"http://127.0.0.1:{port}/mcp")
 
     def fake_down(port: int) -> None:
         calls.append(f"down({port})")
@@ -407,7 +446,7 @@ def test_recycle_calls_down_then_up_and_polls(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(lifecycle, "serves_query", fake_serves_query)
 
     result = recycle()
-    assert calls == ["down(8181)", "up(8181)", "serves_query(8181)"]
+    assert calls == [f"down({port})", f"up({port})", f"serves_query({port})"]
     assert result is expected
 
 

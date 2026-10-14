@@ -34,15 +34,10 @@ ACCEPTED: dict[str, frozenset[int]] = {
     # do not depend on the answer — but a *new* test on 9000 would not
     # have that excuse by default, which is the point of naming it.
     "tests/unit/qmd/test_lifecycle.py::test_status_honors_custom_port": frozenset({9000}),
-    # The other two lifecycle probes, on qmd's default port.
-    "tests/unit/qmd/test_lifecycle.py::test_status_returns_not_running_when_pidfile_absent_and_no_listener": frozenset(
-        {8181}
-    ),
-    "tests/unit/qmd/test_lifecycle.py::test_status_url_uses_default_port": frozenset({8181}),
-    # `test_cli_qmd.py` resolves `status_cmd` end to end, same probe.
-    "tests/unit/cli/test_cli_qmd.py::test_a_command_resolves_with_nothing_cached_in_globals": frozenset(
-        {8181}
-    ),
+    # The other three used to probe qmd's default port and needed a grant.
+    # They now stub ``_port_listening``: the default moved to 9000, so a real
+    # connect there reaches the operator's LIVE daemon and the assertion
+    # would depend on whether it happened to be up. No socket, no grant.
 }
 
 #: Hit attributed to no test — session setup, collection or teardown.

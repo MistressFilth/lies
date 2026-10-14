@@ -113,7 +113,11 @@ def test_qmd_down_invokes_down(monkeypatch) -> None:
     """
     captured: dict[str, int] = {}
 
-    def fake_down(port: int = 8181) -> None:
+    from lies import config
+
+    default_port = config.get_qmd_port()
+
+    def fake_down(port: int = default_port) -> None:
         captured["port"] = port
 
     monkeypatch.setattr(qmd_cli, "_down", fake_down)
@@ -121,7 +125,7 @@ def test_qmd_down_invokes_down(monkeypatch) -> None:
     runner = CliRunner()
     result = runner.invoke(app, ["down"])
     assert result.exit_code == 0, result.output
-    assert captured == {"port": 8181}
+    assert captured == {"port": default_port}
     assert "stopped" in result.stdout.lower()
 
 

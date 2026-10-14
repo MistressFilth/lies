@@ -262,7 +262,9 @@ async def test_a_stale_daemon_is_reaped_and_the_call_still_proceeds(
     # ``.get``, not ``[]``: a missing key must read as this test's
     # message, not as a bare ``KeyError: 'port'`` that points at the
     # assertion instead of at the bug.
-    assert spawned[0].get("port") == 8181, (
+    from lies import config
+
+    assert spawned[0].get("port") == config.get_qmd_port(), (
         "the stale-daemon respawn must carry the port from the URL this "
         f"call is about to use; got {spawned[0]!r}. Dropping it is "
         "IMPORTANT 5's failure mode at this third site: the reap kills the "

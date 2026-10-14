@@ -227,7 +227,7 @@
     "tests/unit/test_cli_ingestion.py": 1,
     "tests/unit/test_cli_sync_exit_code.py": 5,
     "tests/unit/test_cli_sync_help.py": 1,
-    "tests/unit/test_config.py": 2,
+    "tests/unit/test_config.py": 1,
     "tests/unit/test_constants.py": 1,
     "tests/unit/test_file_back_author.py": 2,
     "tests/unit/test_mcp_daemon.py": 2,

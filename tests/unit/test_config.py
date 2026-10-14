@@ -7,6 +7,13 @@ import pytest
 from lies import config
 
 
+def _port_of(url: str) -> int:
+    """The port in ``url``, for asserting the default and the getter agree."""
+    from urllib.parse import urlsplit
+
+    return urlsplit(url).port or 9000
+
+
 @pytest.fixture(autouse=True)
 def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for k in [
@@ -48,17 +55,42 @@ def test_get_qmd_transport_default() -> None:
 
 
 def test_get_qmd_url_default() -> None:
-    """The default URL is the path qmd actually serves.
+    """The default URL is the path qmd actually serves, on the name it binds."""
+    # A URL without that path reaches the daemon and comes back 404, which
+    # the access seam reads as a transport failure and reports as a *down*
+    # daemon: a live daemon reported as absent, with the fix ("start it")
+    # being the one action that would change nothing.
+    #
+    # The *port* is deliberately not asserted: it is a deployment choice,
+    # it has changed, and ``get_qmd_port`` derives from whatever this
+    # constant says. A literal port here is how this test went stale the
+    # moment the default moved.
+    assert config.get_qmd_url() == config.DEFAULT_QMD_URL
+    assert config.get_qmd_url().startswith("http://localhost:"), (
+        "qmd binds the name `localhost`, not a literal address: an IPv6-first "
+        f"/etc/hosts puts it on [::1] and refuses the IPv4 dial — got "
+        f"{config.get_qmd_url()!r}"
+    )
+    assert config.get_qmd_url().endswith("/mcp")
 
-    qmd's HTTP MCP server listens on exactly one route — ``/mcp``
-    (``dist/mcp/server.js``: ``if (pathname === "/mcp" && …)``), and
-    ``qmd.lifecycle`` has always built ``http://host:port/mcp``. A URL
-    without that path reaches the daemon and comes back 404, which the
-    access seam classifies as a transport failure and reports as a down
-    daemon: a live daemon reported as absent, with the fix ("start it")
-    being the one action that would change nothing.
-    """
-    assert config.get_qmd_url() == "http://localhost:8181/mcp"
+
+def test_get_qmd_port_defaults_to_the_url_default(monkeypatch) -> None:
+    """The port follows ``DEFAULT_QMD_URL`` rather than a second literal."""
+    monkeypatch.delenv("LIES_QMD_URL", raising=False)
+    assert config.get_qmd_port() == 9000
+    assert config.get_qmd_port() == _port_of(config.DEFAULT_QMD_URL)
+
+
+def test_get_qmd_port_follows_an_overridden_url(monkeypatch) -> None:
+    """``LIES_QMD_URL`` moves the port with it, rather than leaving a literal behind."""
+    monkeypatch.setenv("LIES_QMD_URL", "http://localhost:9100/mcp")
+    assert config.get_qmd_port() == 9100
+
+
+def test_get_qmd_port_falls_back_on_a_malformed_url(monkeypatch) -> None:
+    """A junk value falls back to the default instead of raising."""
+    monkeypatch.setenv("LIES_QMD_URL", "not a url")
+    assert config.get_qmd_port() == 9000
 
 
 def test_every_qmd_url_default_is_sourced_from_the_one_config_constant() -> None:

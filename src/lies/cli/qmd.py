@@ -17,13 +17,15 @@ import json
 
 import typer
 
+from lies import config
+
 app = typer.Typer(help="qmd daemon lifecycle", no_args_is_help=True)
 
 
 # Mirror of ``lies.qmd.lifecycle._DEFAULT_PORT`` so @app.command()
 # option defaults can reference it without importing the heavy
 # lifecycle module at CLI startup.
-_DEFAULT_PORT = 8181
+_DEFAULT_PORT = config.get_qmd_port()
 
 
 #: Names :func:`__getattr__` resolves from :mod:`lies.qmd.lifecycle` on

@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from lies import config
+
 _log = logging.getLogger(__name__)
 
 #: The name qmd binds, not a literal address. ``dist/mcp/server.js``
@@ -28,8 +30,20 @@ _log = logging.getLogger(__name__)
 #: the *first* family the host lists — ``[::1]`` on a runner whose
 #: ``/etc/hosts`` puts ``::1 localhost`` ahead of ``127.0.0.1``.
 _HOST = "localhost"
-_DEFAULT_PORT = 8181
 _READY_TIMEOUT_S = 30.0
+
+
+def _port(port: int | None) -> int:
+    """Resolve a caller's ``port``, defaulting to the configured URL's.
+
+    ``None`` means "whatever the operator configured", so the daemon LIES
+    probes is the daemon LIES will spawn. A module-level literal could
+    drift from ``config.DEFAULT_QMD_URL``, and did: ``status()`` probed
+    8181 while the configured daemon ran on 9000.
+    """
+    return port if port is not None else config.get_qmd_port()
+
+
 _STOP_TIMEOUT_S = 10.0
 _SERVES_QUERY_TIMEOUT_S = 5.0
 
@@ -165,7 +179,7 @@ def _find_qmd() -> str:
     return path
 
 
-def status(port: int = _DEFAULT_PORT) -> DaemonStatus:
+def status(port: int | None = None) -> DaemonStatus:
     """Return current daemon status.
 
     ``running`` is true only when both a parseable pidfile exists
@@ -173,6 +187,7 @@ def status(port: int = _DEFAULT_PORT) -> DaemonStatus:
     reported only when the port is up — a stale pidfile returns
     ``pid=None`` so callers do not signal a dead process.
     """
+    port = _port(port)
     pid = _read_pid()
     listening = _port_listening(port)
     return DaemonStatus(
@@ -183,7 +198,7 @@ def status(port: int = _DEFAULT_PORT) -> DaemonStatus:
     )
 
 
-def _up(port: int = _DEFAULT_PORT) -> DaemonStatus:
+def _up(port: int | None = None) -> DaemonStatus:
     """Spawn the daemon and wait for the port to bind.
 
     ``qmd mcp --http --daemon`` double-forks and writes qmd's
@@ -195,6 +210,7 @@ def _up(port: int = _DEFAULT_PORT) -> DaemonStatus:
             within ``_READY_TIMEOUT_S`` (operator should consult
             ``_logfile()``).
     """
+    port = _port(port)
     from lies.qmd._subprocess import _run_qmd
 
     qmd_bin = _find_qmd()
@@ -216,7 +232,7 @@ def _up(port: int = _DEFAULT_PORT) -> DaemonStatus:
     raise RuntimeError(msg)
 
 
-def _down(port: int = _DEFAULT_PORT) -> None:
+def _down(port: int | None = None) -> None:
     """Stop the daemon via ``qmd mcp stop``. Best-effort; bounded.
 
     Short-circuits when nothing is to stop (no listener, no
@@ -231,6 +247,7 @@ def _down(port: int = _DEFAULT_PORT) -> None:
     unrecoverable -- and an unexpected death is exactly when that
     output is the only evidence there is.
     """
+    port = _port(port)
     from lies.qmd._subprocess import _run_qmd
 
     if not _port_listening(port) and _read_pid() is None:
@@ -257,7 +274,7 @@ def _down(port: int = _DEFAULT_PORT) -> None:
 _SESSION_HEADER = "mcp-session-id"
 
 
-def serves_query(port: int = _DEFAULT_PORT, timeout: float = _SERVES_QUERY_TIMEOUT_S) -> bool:
+def serves_query(port: int | None = None, timeout: float = _SERVES_QUERY_TIMEOUT_S) -> bool:
     """True iff the daemon's MCP endpoint answers a JSON-RPC ``initialize`` within ``timeout``.
 
     A bound port is not enough — a daemon can pass a port probe
@@ -269,6 +286,7 @@ def serves_query(port: int = _DEFAULT_PORT, timeout: float = _SERVES_QUERY_TIMEO
     to ``/query`` (the HTTP-API spelling qmd never served) and
     therefore always returned False on a live daemon.
     """
+    port = _port(port)
     import httpx
 
     payload = {
@@ -337,7 +355,7 @@ def _close_probe_session(
         return
 
 
-def recycle(port: int = _DEFAULT_PORT, ready_timeout: float = _READY_TIMEOUT_S) -> DaemonStatus:
+def recycle(port: int | None = None, ready_timeout: float = _READY_TIMEOUT_S) -> DaemonStatus:
     """Restart the daemon and wait until it serves a query.
 
     Stop the listener, start a fresh one, poll ``serves_query``
@@ -345,6 +363,7 @@ def recycle(port: int = _DEFAULT_PORT, ready_timeout: float = _READY_TIMEOUT_S) 
     ``RuntimeError`` when the fresh daemon never serves within
     the budget.
     """
+    port = _port(port)
     _down(port)
     status_ = _up(port)
     deadline = time.time() + ready_timeout
