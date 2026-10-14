@@ -94,6 +94,45 @@ def test_env_var_overrides_toml(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resolve_model("linter", cfg) == "anthropic:claude-haiku-4-5"
 
 
+def test_resolver_imports_pydantic_ai_only_under_type_checking() -> None:
+    """``resolver.py`` must not import pydantic-ai at module scope."""
+    # It imported ``pydantic_ai.models.Model`` for a return annotation, so
+    # importing ``lies.providers`` cost ~930ms. The annotation is a string
+    # under ``from __future__ import annotations``, so the import belongs
+    # behind ``TYPE_CHECKING`` like the provider SDKs.
+    #
+    # Asserted statically: a runtime probe needs a fresh interpreter, which
+    # the 0.15s call-phase budget rules out of the default unit run.
+    import ast
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[3] / "src/lies/providers/resolver.py"
+    tree = ast.parse(src.read_text(encoding="utf-8"))
+    guarded: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If):
+            test = ast.dump(node.test)
+            if "TYPE_CHECKING" in test:
+                guarded.update(range(node.lineno, node.end_lineno + 1))
+    # Module and class scope only: an import inside a function body is
+    # already deferred and costs nothing until that branch runs.
+    scope = list(tree.body)
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            scope.extend(node.body)
+    for node in scope:
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("pydantic_ai"):
+            assert node.lineno in guarded, (
+                f"resolver.py:{node.lineno} imports pydantic_ai at module scope, "
+                "costing every importer ~930ms"
+            )
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert not alias.name.startswith("pydantic_ai"), (
+                    f"resolver.py:{node.lineno} imports pydantic_ai at module scope"
+                )
+
+
 # ---------------------------------------------------------------------------
 # Pure-lookup tests for ``resolve_agent_to_provider``
 # ---------------------------------------------------------------------------

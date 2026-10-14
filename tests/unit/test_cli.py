@@ -177,18 +177,21 @@ def test_mcp_subcommand_invokes_fastmcp_run(monkeypatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _stub_qmd(monkeypatch):
-    """Keep `up` and `status` from shelling out to the real qmd.
+    """Keep `up`, `down` and `status` from shelling out to the real qmd.
 
     Without this every CLI test would depend on whether a qmd daemon
-    happens to be running on the developer's machine.
+    happens to be running on the developer's machine — and since `down`
+    also stops it, without this a unit test would *kill* that daemon.
     """
     from lies.qmd import daemon as qmd_daemon
+    from lies.qmd import lifecycle as qmd_lifecycle
 
     state = qmd_daemon.QmdState(
         installed=True, running=True, pid=1234, detail="qmd daemon running (pid 1234)"
     )
     monkeypatch.setattr(qmd_daemon, "ensure_qmd_daemon", lambda **kwargs: state)
     monkeypatch.setattr(qmd_daemon, "qmd_daemon_state", lambda: state)
+    monkeypatch.setattr(qmd_lifecycle, "_down", lambda port=None: None)
     # Pre-register the default wiki so REPL tests don't trip WikiNotRegistered.
     Wiki.data_root_for("default").mkdir(parents=True, exist_ok=True)
     return state
@@ -537,6 +540,52 @@ def test_down_still_accepts_the_force_flag(monkeypatch, tmp_path: Path) -> None:
     result = runner.invoke(app, ["mcp", "down", "--name", name, "--force"])
     assert result.exit_code == 0, result.output
     assert "stopped daemon pid 99" in result.stdout
+
+
+def test_down_stops_qmd_on_the_configured_port(monkeypatch, tmp_path: Path) -> None:
+    """``mcp down`` stops qmd too, at the port the URL names."""
+    from lies import config
+    from lies.mcp import daemon
+
+    name = "cli-down-qmd"
+    _register_wiki(name)
+    seen: list[int] = []
+
+    monkeypatch.setattr(
+        daemon,
+        "stop_daemon",
+        lambda *a, **k: daemon.StopResult(action="stopped", pid=99, signal="SIGTERM"),
+    )
+    monkeypatch.setattr(
+        "lies.qmd.lifecycle._down", lambda port=None: seen.append(port), raising=False
+    )
+
+    result = runner.invoke(app, ["mcp", "down", "--name", name])
+    assert result.exit_code == 0, result.output
+    assert seen == [config.get_qmd_port()], f"qmd was not stopped on the configured port: {seen}"
+    assert "qmd" in result.stdout.lower(), result.stdout
+
+
+def test_down_no_qmd_leaves_it_running(monkeypatch, tmp_path: Path) -> None:
+    """``--no-qmd`` is the escape hatch for a daemon other tools share."""
+    from lies.mcp import daemon
+
+    name = "cli-down-keep-qmd"
+    _register_wiki(name)
+    seen: list[int] = []
+
+    monkeypatch.setattr(
+        daemon,
+        "stop_daemon",
+        lambda *a, **k: daemon.StopResult(action="stopped", pid=99, signal="SIGTERM"),
+    )
+    monkeypatch.setattr(
+        "lies.qmd.lifecycle._down", lambda port=None: seen.append(port), raising=False
+    )
+
+    result = runner.invoke(app, ["mcp", "down", "--no-qmd", "--name", name])
+    assert result.exit_code == 0, result.output
+    assert seen == [], f"--no-qmd still stopped qmd: {seen}"
 
 
 def test_down_does_not_thread_force_to_stop_daemon(monkeypatch, tmp_path: Path) -> None:

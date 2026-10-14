@@ -127,10 +127,10 @@ every search result with `degraded: True` so the model knows the search
 was not qmd-backed. Set `LIES_QMD_TRANSPORT=stdio` to opt back into a
 `qmd mcp` subprocess per agent.
 
-`lies mcp down` never stops qmd. That daemon is machine-global — one
-fixed port, one index shared across every wiki and any other tool using
-it — so stopping it would break sessions LIES knows nothing about. Use
-`qmd mcp stop` yourself if you really want it down.
+`lies mcp down` also stops qmd's daemon. That daemon is machine-global —
+one fixed port, one index shared across every wiki and any other tool
+using it — so stopping it would break sessions LIES knows nothing about.
+Pass `--no-qmd` to leave it running when that is the case you are in.
 
 ### QMD daemon recycle
 
